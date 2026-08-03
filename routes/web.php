@@ -27,6 +27,8 @@ Route::middleware('pin.auth')->group(function () {
         Route::get('/', [InventoryDashboardController::class, 'index'])->name('dashboard');
 
         Route::resource('suppliers', SupplierController::class);
+        Route::get('products/bulk-prices', [ProductController::class, 'bulkPrices'])->name('products.bulk-prices');
+        Route::put('products/bulk-prices', [ProductController::class, 'updateBulkPrices'])->name('products.bulk-prices.update');
         Route::resource('products', ProductController::class);
         Route::get('products/{product}/duplicate', [ProductController::class, 'duplicate'])->name('products.duplicate');
 

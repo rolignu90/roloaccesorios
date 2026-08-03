@@ -661,7 +661,8 @@
         <nav class="nav">
             <div class="nav-label">Inventario</div>
             <a href="{{ route('inventory.dashboard') }}" class="{{ request()->routeIs('inventory.dashboard') ? 'active' : '' }}">Dashboard</a>
-            <a href="{{ route('inventory.products.index') }}" class="{{ request()->routeIs('inventory.products.*') ? 'active' : '' }}">Productos</a>
+            <a href="{{ route('inventory.products.index') }}" class="{{ request()->routeIs('inventory.products.index', 'inventory.products.show', 'inventory.products.create', 'inventory.products.edit', 'inventory.products.store', 'inventory.products.update') ? 'active' : '' }}">Productos</a>
+            <a href="{{ route('inventory.products.bulk-prices') }}" class="{{ request()->routeIs('inventory.products.bulk-prices*') ? 'active' : '' }}">Precios masivos</a>
             <a href="{{ route('inventory.free-shipping.index') }}" class="{{ request()->routeIs('inventory.free-shipping.*') ? 'active' : '' }}">Envío gratis</a>
             <a href="{{ route('inventory.suppliers.index') }}" class="{{ request()->routeIs('inventory.suppliers.*') ? 'active' : '' }}">Proveedores</a>
             <a href="{{ route('inventory.stock.index') }}" class="{{ request()->routeIs('inventory.stock.*') ? 'active' : '' }}">Entradas de stock</a>

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Inventory;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Inventory\BulkUpdateProductPricesRequest;
 use App\Http\Requests\Inventory\StoreProductRequest;
 use App\Http\Requests\Inventory\UpdateProductRequest;
 use App\Models\Product;
@@ -169,6 +170,56 @@ class ProductController extends Controller
         return redirect()
             ->route('inventory.products.index')
             ->with('success', 'Producto eliminado correctamente.');
+    }
+
+    public function bulkPrices(Request $request): View
+    {
+        $products = Product::query()
+            ->when(! $request->boolean('show_inactive'), fn ($q) => $q->where('is_active', true))
+            ->when($request->filled('q'), function ($query) use ($request) {
+                $term = $request->string('q')->toString();
+                $query->where(function ($inner) use ($term) {
+                    $inner->where('code', 'like', "%{$term}%")
+                        ->orWhere('name', 'like', "%{$term}%");
+                });
+            })
+            ->orderBy('name')
+            ->get();
+
+        return view('inventory.products.bulk-prices', [
+            'products' => $products,
+            'vatRate' => config('sales.vat_rate'),
+        ]);
+    }
+
+    public function updateBulkPrices(BulkUpdateProductPricesRequest $request): RedirectResponse
+    {
+        $rows = $request->validated('products');
+        $updated = 0;
+
+        DB::transaction(function () use ($rows, &$updated) {
+            foreach ($rows as $row) {
+                $product = Product::query()->lockForUpdate()->findOrFail($row['id']);
+
+                $product->update([
+                    'sale_price_without_vat' => price_without_vat($row['sale_price_with_vat']),
+                    'wholesale_price_without_vat' => $row['wholesale_price_with_vat'] === null
+                        ? null
+                        : price_without_vat($row['wholesale_price_with_vat']),
+                    'promo_active' => (bool) ($row['promo_active'] ?? false),
+                    'promo_type' => ($row['promo_active'] ?? false) ? ($row['promo_type'] ?? Product::PROMO_AMOUNT) : null,
+                    'promo_value' => ($row['promo_active'] ?? false) ? $row['promo_value'] : null,
+                ]);
+                $updated++;
+            }
+        });
+
+        return redirect()
+            ->route('inventory.products.bulk-prices', array_filter([
+                'q' => $request->query('q'),
+                'show_inactive' => $request->query('show_inactive'),
+            ]))
+            ->with('success', "Precios actualizados en {$updated} producto".($updated === 1 ? '' : 's').'.');
     }
 
     private function uniqueCopyCode(string $baseCode): string

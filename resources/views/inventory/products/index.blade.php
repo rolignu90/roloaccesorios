@@ -15,6 +15,7 @@
         <p class="muted">Árbol con proveedores · precios c/IVA · alertas de stock</p>
     </div>
     <div class="actions">
+        <a class="btn btn-secondary" href="{{ route('inventory.products.bulk-prices') }}">Precios masivos</a>
         <a class="btn btn-secondary" href="{{ route('inventory.stock.create') }}">Entrada de stock</a>
         <a class="btn" href="{{ route('inventory.products.create') }}">Nuevo producto</a>
     </div>
