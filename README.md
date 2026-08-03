@@ -1,58 +1,241 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# ROLO Accesorios — CRM de Inventario y Ventas
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Sistema interno para **ROLO Accesorios** (El Salvador): inventario FIFO, ventas con IVA, contra entrega / COD, consignación, costos y exportación de etiquetas de envío.
 
-## About Laravel
+- **Producción:** [https://ventas.roloaccesorios.com](https://ventas.roloaccesorios.com)
+- **Repo:** [github.com/rolignu90/roloaccesorios](https://github.com/rolignu90/roloaccesorios)
+- **Stack:** Laravel 13 · PHP 8.3+ · MySQL 8 · Laravel Sail (Docker) · Nginx en DigitalOcean
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+---
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## Objetivo del sistema
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+Operar el día a día del negocio en un solo CRM:
 
-## Learning Laravel
+1. Comprar / recibir stock por lotes (FIFO).
+2. Vender (mostrador o contra entrega) con precios, IVA, descuentos y envío.
+3. Ajustar pedidos COD antes del despacho (cliente, dirección, ítems).
+4. Calcular **margen real** restando COGS FIFO y costos del courier (envío + comisión COD).
+5. Exportar CSV de etiquetas para la empresa de envío.
+6. Registrar consignaciones y gastos / márgenes.
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+Moneda: **USD**. IVA por defecto: **13%** (`SALES_VAT_RATE`).
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+---
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+## Acceso
 
-## Agentic Development
+- Login por **PIN** (`APP_PIN` en `.env`), no hay usuarios multi-rol todavía.
+- Middleware `pin.auth` protege todo el panel.
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+---
 
-```bash
-composer require laravel/boost --dev
+## Módulos
 
-php artisan boost:install
+### 1. Inventario
+
+| Función | Descripción |
+|--------|-------------|
+| Dashboard | Resumen de stock, alertas de mínimo, compras |
+| Productos | CRUD, duplicar, precios venta / mayoreo / promo, peso, envío gratis |
+| Proveedores | CRUD y vínculo producto–proveedor con precio de compra |
+| Entradas de stock | Recepción por lote FIFO; rectificar / anular entradas no vendidas |
+| Historial de movimientos | Entradas, ventas, anulaciones, ajustes |
+| Envío gratis | Catálogo de productos con `free_shipping` |
+
+**FIFO:** cada entrada crea un lote (`inventory_lots`). Las ventas consumen el lote más antiguo primero (`FifoInventoryService`). Al anular venta o bajar cantidad se restaura stock.
+
+### 2. Ventas
+
+| Función | Descripción |
+|--------|-------------|
+| Clientes | Datos de entrega (depto/municipio SV), precios por tramos de cantidad |
+| Vendedores | Prefijo de numeración (`M-`, `F-`, …) → `M-20260801-0001` |
+| Empresas de envío | Costo de envío + comisión COD (fijo o % del total c/IVA) |
+| Ventas | Crear, listar (infinite scroll), ver, anular, editar COD |
+| Etiquetas CSV | Exportar día completo o selección de ventas con envío |
+
+#### Crear venta
+
+- Cliente existente o nuevo (código `CLI-####` automático).
+- Líneas: producto, cantidad, precio c/IVA, descuentos por línea.
+- Descuento global % y/o monto c/IVA.
+- Flag **Lleva envío** (default sí). Monto cobrado al cliente (default $3) independiente del costo del courier.
+- Empresa de envío obligatoria si hay envío; la primera activa queda preseleccionada.
+- Si algún producto tiene envío gratis → envío cobrado = $0.
+- Acciones: **Confirmar venta** o **Confirmar y nueva venta**.
+
+#### Edición de ventas confirmadas (contra entrega)
+
+Pensado para COD: el cliente paga al recibir y el pedido puede cambiar.
+
+En la ficha de venta confirmada se puede:
+
+- Editar **cliente / entrega** (nombre, teléfono, email, dirección, departamento, municipio, país, CP) → actualiza el cliente del CRM.
+- **Agregar / quitar ítems** y cambiar cantidades → FIFO + totales + comisión COD.
+- Ajustar **envío cobrado** y **notas**.
+- Ventas **anuladas** solo lectura.
+
+#### Márgenes
+
+| Concepto | Fórmula resumida |
+|----------|------------------|
+| Margen producto s/IVA | Base gravada − COGS |
+| Margen producto c/IVA | (Total − envío cliente) − COGS |
+| Costo empresa | `carrier_shipping_cost` + `carrier_commission_amount` |
+| Margen real s/IVA | Margen producto s/IVA + envío cliente − costo empresa |
+| Margen real c/IVA | Total cobrado − COGS − costo empresa |
+
+#### Exportación de etiquetas
+
+CSV estilo `modelo_carga` con columnas: ORDEN, NOMBRE, TELEFONO, EMAIL, DIRECCION, MUNICIPIO, DEPARTAMENTO, PAIS, CODIGO POSTAL, DESCRIPCION, PESO, PRECIO, OBSERVACIONES.
+
+- **DESCRIPCION:** `[últimos 4 del número] \| [prefijo] - [Cant] [Producto], …`
+- **OBSERVACIONES:** solo las notas de la venta.
+- Solo ventas **confirmadas con envío**.
+- Listado con **infinite scroll** para marcar muchas y exportar la selección.
+
+### 3. Consignación
+
+- Entrega de mercadería a un cliente/punto sin venta definitiva.
+- Pagos parciales y devoluciones.
+- Dashboard de saldos / estado.
+- Precios pueden resolver tramos del cliente.
+
+### 4. Finanzas / Costos
+
+- Dashboard de costos y márgenes (s/IVA, c/IVA, margen real).
+- Gastos por categoría.
+- Detalle de márgenes por venta.
+
+---
+
+## Arquitectura (resumen)
+
+```
+app/
+  Http/Controllers/   Inventory · Sales · Consignments · Costs · Auth PIN
+  Models/             Product, InventoryLot, Sale, SaleItem, Customer, …
+  Services/           FifoInventoryService, SaleService, SaleLabelExportService, …
+  Support/            ElSalvadorGeo, helpers (money, price_with_vat)
+resources/views/      Blade + CSS embebido (layout responsive / drawer móvil)
+database/migrations/  Esquema completo del CRM
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Servicios clave:
 
-## Contributing
+- `SaleService` — crear, anular, agregar/quitar/ajustar ítems, recalcular totales y COD.
+- `FifoInventoryService` — receive / consume / restore.
+- `SaleLabelExportService` — CSV de etiquetas.
+- `CustomerPricingService` — precios por cliente y tramo de cantidad.
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+---
 
-## Code of Conduct
+## Setup local (Sail)
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+Requisitos: Docker Desktop, Composer.
 
-## Security Vulnerabilities
+```bash
+cp .env.example .env
+composer install
+./vendor/bin/sail up -d
+./vendor/bin/sail artisan key:generate
+./vendor/bin/sail artisan migrate --seed
+```
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+App: [http://localhost:8888](http://localhost:8888) (puerto `APP_PORT`).
 
-## License
+PIN por defecto en `.env.example`: ver `APP_PIN`.
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+Comandos útiles:
+
+```bash
+./vendor/bin/sail artisan migrate
+./vendor/bin/sail artisan tinker
+./vendor/bin/sail exec mysql mysqldump -usail -ppassword --no-tablespaces rolo_inventory_sales > backup.sql
+```
+
+---
+
+## Producción (DigitalOcean)
+
+Desplegado en Droplet Ubuntu con:
+
+- Nginx + PHP-FPM 8.4 + MySQL
+- App en `/var/www/ventas.roloaccesorios.com`
+- SSL Let’s Encrypt (`ventas.roloaccesorios.com`)
+- Firewall: 22 / 80 / 443
+
+Variables importantes de producción:
+
+```env
+APP_ENV=production
+APP_DEBUG=false
+APP_URL=https://ventas.roloaccesorios.com
+APP_PIN=*****
+DB_HOST=127.0.0.1
+DB_DATABASE=rolo_inventory_sales
+DB_USERNAME=rolo
+DB_PASSWORD=*****
+SESSION_DOMAIN=.roloaccesorios.com
+```
+
+Actualizar código (desde la máquina de desarrollo):
+
+```bash
+rsync -az --exclude='.git' --exclude='vendor' --exclude='node_modules' --exclude='.env' \
+  ./ root@TU_IP:/var/www/ventas.roloaccesorios.com/
+ssh root@TU_IP 'cd /var/www/ventas.roloaccesorios.com && composer install --no-dev --optimize-autoloader && php artisan migrate --force && php artisan view:clear && php artisan config:cache && php artisan route:cache'
+```
+
+---
+
+## Datos geográficos (El Salvador)
+
+Departamentos y municipios con código postal asistido (`App\Support\ElSalvadorGeo` + JSON en `resources/data/`). Selects enlazados en formularios de cliente / entrega.
+
+---
+
+## UX
+
+- Branding ROLO Accesorios (logo, tipografía Oswald / Space Grotesk).
+- Selects buscables (Tom Select).
+- Layout **responsive**: barra móvil + menú drawer; tablas con scroll horizontal; formularios apilados.
+- Infinite scroll en listado de ventas para selección masiva de export.
+
+---
+
+## Seguridad (estado actual)
+
+- Acceso por PIN compartido (adecuado para equipo pequeño interno).
+- `.env` fuera de Git; no versionar secretos.
+- HTTPS en producción.
+- Ventas anuladas no editables; stock se restaura vía FIFO.
+
+Mejoras futuras posibles: usuarios/roles, auditoría de cambios COD, snapshot de dirección por venta, cola de trabajos, backups automáticos.
+
+---
+
+## Roadmap ya entregado (plan del sistema)
+
+- [x] Inventario + proveedores + lotes FIFO
+- [x] Productos (promo, mayoreo, envío gratis, peso)
+- [x] Clientes + geo SV + precios por tramo
+- [x] Vendedores con prefijo de numeración
+- [x] Ventas con IVA, descuentos, envío cobrado vs absorbido
+- [x] Empresas de envío + costo + comisión COD
+- [x] Margen producto y margen real (s/IVA y c/IVA)
+- [x] Export CSV etiquetas (día / selección)
+- [x] Infinite scroll en ventas
+- [x] Edición COD: cliente, ítems, envío/notas
+- [x] Consignaciones (entregas, pagos, devoluciones)
+- [x] Costos / gastos / dashboard de márgenes
+- [x] UI móvil (drawer)
+- [x] Deploy DigitalOcean + dominio + SSL
+- [x] Repositorio GitHub versionado
+
+---
+
+## Licencia
+
+Uso interno de ROLO Accesorios. Basado en el skeleton de Laravel (MIT).
