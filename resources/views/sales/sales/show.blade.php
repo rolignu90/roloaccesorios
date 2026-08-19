@@ -28,7 +28,30 @@
         @if ($customer)
             <a class="btn btn-secondary" href="{{ route('sales.customers.show', $customer) }}">Ver cliente</a>
         @endif
-        @if ($canEdit)
+        @if ($sale->canSendToSistrack())
+            <form method="POST" action="{{ route('sales.sales.send-sistrack.one', $sale) }}" id="sistrack-one-form">
+                @csrf
+                <button class="btn" type="submit" id="sistrack-one-btn">Enviar a Sistrack</button>
+            </form>
+        @endif
+        @if ($sale->canSyncSistrackStatus())
+            <form method="POST" action="{{ route('sales.sales.sync-sistrack-status.one', $sale) }}">
+                @csrf
+                <button class="btn btn-secondary" type="submit">Sincronizar estado</button>
+            </form>
+        @endif
+        @if ($sale->isInTransit())
+            <form method="POST" action="{{ route('sales.sales.mark-delivered.one', $sale) }}" onsubmit="return confirm('¿Marcar esta venta como entregada?')">
+                @csrf
+                <button class="btn" type="submit">Marcar entregada</button>
+            </form>
+        @endif
+        @if (! $sale->isVoided() && $canEdit)
+            <form method="POST" action="{{ route('sales.sales.void', $sale) }}" onsubmit="return confirm('¿Anular esta venta y restaurar stock?')">
+                @csrf
+                <button class="btn btn-danger" type="submit">Anular venta</button>
+            </form>
+        @elseif (! $sale->isVoided() && $sale->isInTransit())
             <form method="POST" action="{{ route('sales.sales.void', $sale) }}" onsubmit="return confirm('¿Anular esta venta y restaurar stock?')">
                 @csrf
                 <button class="btn btn-danger" type="submit">Anular venta</button>
@@ -37,13 +60,48 @@
     </div>
 </div>
 
+@if ($errors->has('sistrack') || $errors->has('status'))
+    <div class="flash" style="background:#fef2f2;color:#991b1b;border-color:#fecaca;margin-bottom:1rem">
+        {{ $errors->first('sistrack') ?: $errors->first('status') }}
+    </div>
+@endif
+
 <div class="meta">
     <div class="card">
         Estado
         <strong>
-            <span class="badge {{ $sale->isVoided() ? 'badge-off' : 'badge-ok' }}">
-                {{ $sale->isVoided() ? 'Anulada' : 'Confirmada' }}
+            <span class="badge {{ $sale->statusBadgeClass() }}">
+                {{ $sale->statusLabel() }}
             </span>
+            @if ($sale->isStuckInTransit())
+                <div class="muted" style="margin-top:.35rem;font-size:.8rem;font-weight:500;color:#991b1b">En ruta ≥ 7 días</div>
+            @endif
+            @if ($sale->sistrack_shipping_status)
+                <div class="muted" style="margin-top:.35rem;font-size:.8rem;font-weight:500">Sistrack: {{ $sale->sistrack_shipping_status }}</div>
+            @endif
+        </strong>
+    </div>
+    <div class="card">
+        Sistrack
+        <strong>
+            @if ($sale->has_shipping)
+                <span class="badge {{ $sale->isSistrackSent() ? 'badge-ok' : ($sale->sistrack_status === 'failed' ? 'badge-off' : 'badge-warn') }}">
+                    {{ $sale->sistrackStatusLabel() }}
+                </span>
+                @if ($sale->sistrack_external_id)
+                    <div class="muted" style="margin-top:.35rem;font-size:.8rem;font-weight:500">ID {{ $sale->sistrack_external_id }}</div>
+                @endif
+                @if ($sale->sistrack_last_error)
+                    <div class="muted" style="margin-top:.35rem;font-size:.8rem;font-weight:500;color:#991b1b">{{ $sale->sistrack_last_error }}</div>
+                @endif
+                @if ($sale->sistrack_status_synced_at)
+                    <div class="muted" style="margin-top:.35rem;font-size:.8rem;font-weight:500">Última sync {{ $sale->sistrack_status_synced_at->format('d/m/Y H:i') }}</div>
+                @elseif ($sale->sistrack_last_attempt_at)
+                    <div class="muted" style="margin-top:.35rem;font-size:.8rem;font-weight:500">Último intento {{ $sale->sistrack_last_attempt_at->format('d/m/Y H:i') }}</div>
+                @endif
+            @else
+                —
+            @endif
         </strong>
     </div>
     <div class="card">Base s/IVA<strong>{{ money($sale->taxable_base) }}</strong></div>
@@ -255,7 +313,12 @@
         <tbody>
             @foreach ($sale->items as $item)
                 <tr>
-                    <td>{{ $item->product?->code }} — {{ $item->product?->name }}</td>
+                    <td>
+                        {{ $item->product?->code }} — {{ $item->product?->name }}
+                        @if ($item->combo)
+                            <div class="muted" style="font-size:.8rem">Combo {{ $item->combo->code }} — {{ $item->combo->name }}</div>
+                        @endif
+                    </td>
                     <td>
                         @if ($canEdit)
                             <form method="POST" action="{{ route('sales.sales.items.update', [$sale, $item]) }}" style="display:flex;gap:.35rem;align-items:center;min-width:7rem">
@@ -367,7 +430,7 @@
                 @forelse ($item->lotAllocations as $allocation)
                     <tr>
                         <td>{{ $item->product?->code }}</td>
-                        <td>{{ $allocation->inventoryLot?->lot_number }}</td>
+                        <td>{{ $allocation->inventoryLot?->lot_number ?? 'On demand (sin lote)' }}</td>
                         <td>{{ $allocation->quantity }}</td>
                         <td>{{ money($allocation->purchase_price) }}</td>
                         <td>{{ money($allocation->cogs_amount) }}</td>
@@ -417,5 +480,82 @@
         syncPrice();
     })();
     </script>
+@endif
+
+@if ($sale->canSendToSistrack())
+<div id="sistrack-modal" class="sistrack-modal" hidden aria-hidden="true">
+    <div class="sistrack-modal__backdrop"></div>
+    <div class="sistrack-modal__panel" role="dialog" aria-modal="true" aria-labelledby="sistrack-modal-title">
+        <h2 id="sistrack-modal-title" style="margin:0 0 .5rem;font-size:1.15rem">Enviando a Sistrack</h2>
+        <p class="muted" id="sistrack-modal-current" style="margin:0 0 .75rem">Preparando…</p>
+        <div class="sistrack-modal__progress-wrap">
+            <div class="sistrack-modal__progress" id="sistrack-modal-bar" style="width:0%"></div>
+        </div>
+        <p id="sistrack-modal-count" style="margin:.75rem 0 0;font-weight:600">0 / 1 ventas</p>
+        <div class="actions" style="margin-top:1rem;justify-content:flex-end">
+            <button type="button" class="btn btn-secondary" id="sistrack-modal-close" hidden>Cerrar</button>
+        </div>
+    </div>
+</div>
+<style>
+    .sistrack-modal{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:1rem}
+    .sistrack-modal[hidden]{display:none!important}
+    .sistrack-modal__backdrop{position:absolute;inset:0;background:rgba(17,17,17,.45)}
+    .sistrack-modal__panel{position:relative;width:min(420px,100%);background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:1.15rem 1.25rem}
+    .sistrack-modal__progress-wrap{height:.55rem;background:#eee;border-radius:999px;overflow:hidden}
+    .sistrack-modal__progress{height:100%;background:var(--accent,#e85d04);transition:width .25s ease}
+</style>
+<script>
+(() => {
+    const form = document.getElementById('sistrack-one-form');
+    const btn = document.getElementById('sistrack-one-btn');
+    const modal = document.getElementById('sistrack-modal');
+    const modalCurrent = document.getElementById('sistrack-modal-current');
+    const modalCount = document.getElementById('sistrack-modal-count');
+    const modalBar = document.getElementById('sistrack-modal-bar');
+    const modalClose = document.getElementById('sistrack-modal-close');
+    const number = @json($sale->number);
+    const csrf = form?.querySelector('input[name="_token"]')?.value || '';
+
+    form?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!confirm('¿Enviar esta venta a Sistrack / Express El Salvador?')) return;
+        if (btn) btn.disabled = true;
+        modal.hidden = false;
+        modal.setAttribute('aria-hidden', 'false');
+        if (modalCurrent) modalCurrent.textContent = `Enviando venta ${number}`;
+        if (modalCount) modalCount.textContent = '1 / 1 ventas';
+        if (modalBar) modalBar.style.width = '50%';
+        if (modalClose) modalClose.hidden = true;
+
+        try {
+            const res = await fetch(form.action, {
+                method: 'POST',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': csrf,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({}),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (modalBar) modalBar.style.width = '100%';
+            if (!res.ok || data.ok === false) {
+                if (modalCurrent) modalCurrent.textContent = data.message || 'Falló el envío a Sistrack.';
+            } else {
+                if (modalCurrent) modalCurrent.textContent = `Venta ${number} enviada correctamente.`;
+            }
+        } catch (err) {
+            if (modalCurrent) modalCurrent.textContent = err.message || 'Error de red.';
+        } finally {
+            if (modalClose) modalClose.hidden = false;
+            if (btn) btn.disabled = false;
+        }
+    });
+
+    modalClose?.addEventListener('click', () => window.location.reload());
+})();
+</script>
 @endif
 @endsection

@@ -45,7 +45,7 @@
 
         <div id="existing-customer-panel" class="field" @style(['display:none' => $customerMode === 'new'])>
             <label for="customer_id">Cliente *</label>
-            <select id="customer_id" name="customer_id">
+            <select id="customer_id" name="customer_id" data-placeholder="Buscar cliente…">
                 <option value="">— Selecciona —</option>
                 @foreach ($customers as $customer)
                     <option value="{{ $customer->id }}" @selected(old('customer_id', request('customer_id')) == $customer->id)>
@@ -108,53 +108,47 @@
 
         <div class="card" style="margin:1rem 0;padding:1rem;background:#f9fafb">
             <div class="topbar" style="margin-bottom:.75rem">
-                <strong>Productos</strong>
+                <strong>Productos y combos</strong>
                 <button type="button" class="btn btn-secondary" id="add-item-row">Agregar línea</button>
             </div>
+            <p class="muted" style="margin:0 0 1rem">El mismo listado incluye productos y combos. Si eliges un combo, se expanden sus ítems; en la primera línea puedes cambiar el combo o elegir un producto.</p>
+
             <div id="item-rows">
                 @foreach ($oldItems as $index => $item)
-                    <div class="grid-3 item-row" data-row style="align-items:end">
+                    <div class="grid-3 item-row" data-row style="align-items:end" @if(!empty($item['combo_id'])) data-combo-id="{{ $item['combo_id'] }}" @endif>
+                        @if (!empty($item['combo_id']))
+                            <input type="hidden" name="items[{{ $index }}][combo_id]" value="{{ $item['combo_id'] }}">
+                        @endif
                         <div class="field">
-                            <label>Producto</label>
-                            <select name="items[{{ $index }}][product_id]" data-product required>
-                                <option value="">— Selecciona —</option>
-                                @foreach ($products as $product)
-                                    <option
-                                        value="{{ $product->id }}"
-                                        data-price="{{ number_format($product->effectiveSalePriceWithVat(), 2, '.', '') }}"
-                                        data-wholesale="{{ $product->wholesalePriceWithVat() !== null ? number_format($product->wholesalePriceWithVat(), 2, '.', '') : '' }}"
-                                        data-stock="{{ (int) ($product->stock_on_hand ?? 0) }}"
-                                        data-free-shipping="{{ $product->free_shipping ? '1' : '0' }}"
-                                        @selected(($item['product_id'] ?? null) == $product->id)
-                                    >
-                                        {{ $product->code }} — {{ $product->name }}
-                                        @if ($product->free_shipping)
-                                            · envío gratis
-                                        @endif
-                                        @if ($product->hasActivePromo())
-                                            (promo {{ money($product->effectiveSalePriceWithVat()) }})
-                                        @endif
-                                        (stock {{ (int) ($product->stock_on_hand ?? 0) }})
-                                    </option>
-                                @endforeach
+                            <label>Producto / combo</label>
+                            <select name="items[{{ $index }}][product_id]" data-product required @disabled(!empty($item['combo_id']))>
+                                @include('sales.sales._catalog_options', [
+                                    'products' => $products,
+                                    'combos' => $combos ?? [],
+                                    'selectedProductId' => $item['product_id'] ?? null,
+                                ])
                             </select>
+                            @if (!empty($item['combo_id']))
+                                <input type="hidden" name="items[{{ $index }}][product_id]" value="{{ $item['product_id'] }}">
+                                <p class="muted" style="margin:.25rem 0 0;font-size:.78rem">Parte de un combo</p>
+                            @endif
                         </div>
                         <div class="field">
                             <label>Cantidad</label>
-                            <input type="number" min="1" name="items[{{ $index }}][quantity]" value="{{ $item['quantity'] ?? 1 }}" data-qty required>
+                            <input type="number" min="1" name="items[{{ $index }}][quantity]" value="{{ $item['quantity'] ?? 1 }}" data-qty required @readonly(!empty($item['combo_id']))>
                         </div>
                         <div class="field">
                             <label>Precio c/IVA (USD)</label>
-                            <input type="number" min="0" step="0.01" name="items[{{ $index }}][unit_price_with_vat]" value="{{ $item['unit_price_with_vat'] ?? '' }}" data-price-input required>
-                            <p class="muted" style="margin:.25rem 0 0;font-size:.78rem" data-price-hint></p>
+                            <input type="number" min="0" step="0.01" name="items[{{ $index }}][unit_price_with_vat]" value="{{ $item['unit_price_with_vat'] ?? '' }}" data-price-input required @readonly(!empty($item['combo_id']))>
+                            <p class="muted" style="margin:.25rem 0 0;font-size:.78rem" data-price-hint>{{ !empty($item['combo_id']) ? 'Precio de combo' : '' }}</p>
                         </div>
                         <div class="field">
                             <label>Desc. %</label>
-                            <input type="number" min="0" max="100" step="0.01" name="items[{{ $index }}][discount_percent]" value="{{ $item['discount_percent'] ?? 0 }}" data-disc-pct>
+                            <input type="number" min="0" max="100" step="0.01" name="items[{{ $index }}][discount_percent]" value="{{ $item['discount_percent'] ?? 0 }}" data-disc-pct @readonly(!empty($item['combo_id']))>
                         </div>
                         <div class="field">
                             <label>Desc. monto c/IVA</label>
-                            <input type="number" min="0" step="0.01" name="items[{{ $index }}][discount_amount]" value="{{ $item['discount_amount'] ?? 0 }}" data-disc-amt>
+                            <input type="number" min="0" step="0.01" name="items[{{ $index }}][discount_amount]" value="{{ $item['discount_amount'] ?? 0 }}" data-disc-amt @readonly(!empty($item['combo_id']))>
                         </div>
                         <div class="field" style="display:flex;align-items:flex-end;gap:.75rem;padding-bottom:.4rem">
                             <span class="muted" data-line-preview>—</span>
@@ -265,27 +259,12 @@
 <template id="item-row-template">
     <div class="grid-3 item-row" data-row style="align-items:end">
         <div class="field">
-            <label>Producto</label>
+            <label>Producto / combo</label>
             <select name="items[__INDEX__][product_id]" data-product required>
-                <option value="">— Selecciona —</option>
-                @foreach ($products as $product)
-                    <option
-                        value="{{ $product->id }}"
-                        data-price="{{ number_format($product->effectiveSalePriceWithVat(), 2, '.', '') }}"
-                        data-wholesale="{{ $product->wholesalePriceWithVat() !== null ? number_format($product->wholesalePriceWithVat(), 2, '.', '') : '' }}"
-                        data-stock="{{ (int) ($product->stock_on_hand ?? 0) }}"
-                        data-free-shipping="{{ $product->free_shipping ? '1' : '0' }}"
-                    >
-                        {{ $product->code }} — {{ $product->name }}
-                        @if ($product->free_shipping)
-                            · envío gratis
-                        @endif
-                        @if ($product->hasActivePromo())
-                            (promo {{ money($product->effectiveSalePriceWithVat()) }})
-                        @endif
-                        (stock {{ (int) ($product->stock_on_hand ?? 0) }})
-                    </option>
-                @endforeach
+                @include('sales.sales._catalog_options', [
+                    'products' => $products,
+                    'combos' => $combos ?? [],
+                ])
             </select>
         </div>
         <div class="field">
@@ -320,6 +299,7 @@
     const defaultShipping = {{ (float) ($defaultShipping ?? 3) }};
     const customerPriceTiers = @json($customerPriceTiers ?? []);
     const productPriceDefaults = @json($productPriceDefaults ?? []);
+    const comboCatalog = @json($combos ?? []);
     const rows = document.getElementById('item-rows');
     const template = document.getElementById('item-row-template');
     const shippingInput = document.querySelector('[data-shipping-input]');
@@ -383,7 +363,7 @@
         const hint = row.querySelector('[data-price-hint]');
         if (!productSelect || !priceInput) return;
         const productId = productSelect.value;
-        if (!productId) {
+        if (!productId || String(productId).startsWith('combo:')) {
             if (hint) hint.textContent = '';
             return;
         }
@@ -405,6 +385,15 @@
         root?.querySelectorAll('input, select, textarea').forEach((el) => {
             if (el.matches('[data-customer-mode]')) return;
             el.disabled = disabled;
+            if (el.tagName === 'SELECT') {
+                if (!el.tomselect && !disabled) {
+                    window.initSearchableSelects?.(el);
+                }
+                if (el.tomselect) {
+                    if (disabled) el.tomselect.disable();
+                    else el.tomselect.enable();
+                }
+            }
         });
     };
 
@@ -417,7 +406,13 @@
         setDisabled(newPanel, !isNew);
         if (customerSelect) {
             customerSelect.required = !isNew;
-            if (isNew) customerSelect.value = '';
+            if (isNew) {
+                if (customerSelect.tomselect) customerSelect.tomselect.clear(true);
+                else customerSelect.value = '';
+            } else {
+                window.initSearchableSelects?.(customerSelect);
+                customerSelect.tomselect?.enable();
+            }
         }
         window.initSvGeoCascades?.(document);
         window.syncCustomerDocumentFields?.();
@@ -479,9 +474,10 @@
     const lineSubtotal = (row) => lineNetWithVat(row) / (1 + vatRate);
 
     const hasFreeShippingProduct = () => {
-        return [...rows.querySelectorAll('[data-product]')].some((select) => {
-            const option = select.selectedOptions[0];
-            return option?.dataset?.freeShipping === '1';
+        return [...rows.querySelectorAll('[data-row]')].some((row) => {
+            if (row.dataset.freeShipping === '1') return true;
+            const select = row.querySelector('[data-product]');
+            return select?.selectedOptions?.[0]?.dataset?.freeShipping === '1';
         });
     };
 
@@ -598,41 +594,104 @@
         recalc();
     };
 
+    const insertBlankRowAt = (referenceNode = null) => {
+        const index = rows.querySelectorAll('[data-row]').length;
+        const html = template.innerHTML.replaceAll('__INDEX__', String(index));
+        if (referenceNode) {
+            referenceNode.insertAdjacentHTML('beforebegin', html);
+            return referenceNode.previousElementSibling;
+        }
+        rows.insertAdjacentHTML('beforeend', html);
+        return rows.querySelector('[data-row]:last-child');
+    };
+
+    const removeComboGroup = (groupId) => {
+        const groupRows = [...rows.querySelectorAll(`[data-row][data-combo-group="${groupId}"]`)];
+        const anchor = groupRows[groupRows.length - 1]?.nextElementSibling || null;
+        groupRows.forEach((comboRow) => {
+            comboRow.querySelectorAll('select').forEach((el) => window.destroySearchableSelect?.(el));
+            comboRow.remove();
+        });
+        return anchor;
+    };
+
+    const expandComboSelection = (sourceRow, combo, comboQty) => {
+        const label = `${combo.code} — ${combo.name}`;
+        const groupId = 'c' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+        const anchor = sourceRow.nextElementSibling;
+
+        sourceRow.querySelectorAll('select').forEach((el) => window.destroySearchableSelect?.(el));
+        sourceRow.remove();
+
+        allocateComboLines(combo, comboQty).forEach((line, index) => {
+            appendComboRow(line, combo.id, label, groupId, {
+                isPicker: index === 0,
+                insertBefore: anchor,
+            });
+        });
+        reindex();
+        syncShippingFromProducts(true);
+        recalc();
+    };
+
     const onProductChanged = (select) => {
         const row = select?.closest('[data-row]');
         if (!row) return;
+
+        const value = String(select.value || '');
+
+        // Primera línea de un combo expandido: permite cambiar o limpiar el grupo.
+        if (select.dataset.comboPicker === '1') {
+            const groupId = row.dataset.comboGroup;
+            const currentValue = `combo:${row.dataset.comboId || ''}`;
+            if (value === currentValue) return;
+
+            const anchor = removeComboGroup(groupId);
+            const newRow = insertBlankRowAt(anchor);
+            window.initSearchableSelects?.(newRow);
+            reindex();
+
+            if (!value) {
+                syncShippingFromProducts(false);
+                recalc();
+                return;
+            }
+
+            const newSelect = newRow.querySelector('[data-product]');
+            if (newSelect?.tomselect) {
+                newSelect.tomselect.setValue(value, true);
+            } else if (newSelect) {
+                newSelect.value = value;
+            }
+            onProductChanged(newSelect);
+            return;
+        }
+
+        if (value.startsWith('combo:')) {
+            const comboId = value.slice(6);
+            const combo = comboCatalog.find((c) => String(c.id) === String(comboId));
+            const comboQty = Math.max(1, Number(row.querySelector('[data-qty]')?.value || 1));
+            if (!combo) {
+                select.value = '';
+                if (select.tomselect) select.tomselect.clear(true);
+                return;
+            }
+            if (comboQty > Number(combo.stock || 0) && !combo.on_demand) {
+                if (!confirm(`Solo hay stock para ${combo.stock} combo(s). ¿Agregar de todos modos?`)) {
+                    select.value = '';
+                    if (select.tomselect) select.tomselect.clear(true);
+                    return;
+                }
+            }
+
+            expandComboSelection(row, combo, comboQty);
+            return;
+        }
+
         applyRowPrice(row, true);
         const justSelectedFree = select.selectedOptions?.[0]?.dataset?.freeShipping === '1';
         syncShippingFromProducts(justSelectedFree);
         recalc();
-    };
-
-    const bindProductPriceHandlers = (root = rows) => {
-        root?.querySelectorAll('[data-product]').forEach((select) => {
-            if (select.dataset.priceBound === '1') {
-                if (select.tomselect && select.dataset.tsPriceBound !== '1') {
-                    select.dataset.tsPriceBound = '1';
-                    select.tomselect.on('change', () => onProductChanged(select));
-                }
-                return;
-            }
-            select.dataset.priceBound = '1';
-
-            const handler = () => onProductChanged(select);
-            select.addEventListener('change', handler);
-
-            if (select.tomselect) {
-                select.dataset.tsPriceBound = '1';
-                select.tomselect.on('change', handler);
-            }
-        });
-    };
-
-    // Reengancha precios cada vez que Tom Select inicializa selects.
-    const previousInitSearchable = window.initSearchableSelects;
-    window.initSearchableSelects = (root = document) => {
-        previousInitSearchable?.(root);
-        bindProductPriceHandlers(root instanceof HTMLSelectElement ? root.closest('[data-row]') || rows : root);
     };
 
     document.getElementById('add-item-row')?.addEventListener('click', () => {
@@ -643,9 +702,147 @@
         reindex();
     });
 
+    const allocateComboLines = (combo, comboQty) => {
+        const components = combo.items || [];
+        if (!components.length) return [];
+        const qty = Math.max(1, Number(comboQty) || 1);
+        const comboPrice = Number(combo.price || 0) * qty;
+        let weights = components.map((item) => {
+            const ref = Number(item.ref_price || 0);
+            return Math.max(ref > 0 ? ref : 1, 0.01) * Number(item.quantity || 1);
+        });
+        let weightTotal = weights.reduce((a, b) => a + b, 0);
+        if (weightTotal <= 0) {
+            weights = components.map(() => 1);
+            weightTotal = weights.length;
+        }
+        const lines = [];
+        let allocated = 0;
+        components.forEach((item, index) => {
+            const componentQty = Math.max(1, Number(item.quantity || 1));
+            const lineQty = componentQty * qty;
+            let lineTotal;
+            if (index === components.length - 1) {
+                lineTotal = Math.round((comboPrice - allocated) * 100) / 100;
+            } else {
+                lineTotal = Math.round(comboPrice * (weights[index] / weightTotal) * 100) / 100;
+                allocated = Math.round((allocated + lineTotal) * 100) / 100;
+            }
+            const unit = lineQty > 0 ? Math.round((lineTotal / lineQty) * 100) / 100 : 0;
+            lines.push({
+                product_id: String(item.product_id),
+                quantity: lineQty,
+                unit_price_with_vat: unit,
+                free_shipping: (combo.free_shipping || item.free_shipping) ? '1' : '0',
+                label: (item.code || '') + ' — ' + (item.name || ''),
+            });
+        });
+        // Fix residual cents on last line.
+        const sum = lines.reduce((acc, line) => acc + Math.round(line.unit_price_with_vat * line.quantity * 100) / 100, 0);
+        const diff = Math.round((comboPrice - sum) * 100) / 100;
+        if (diff !== 0 && lines.length) {
+            const last = lines[lines.length - 1];
+            if (last.quantity > 0) {
+                const newTotal = Math.round((last.unit_price_with_vat * last.quantity + diff) * 100) / 100;
+                last.unit_price_with_vat = Math.round((newTotal / last.quantity) * 100) / 100;
+            }
+        }
+        return lines;
+    };
+
+    const appendComboRow = (line, comboId, comboLabel, groupId, options = {}) => {
+        const { isPicker = false, insertBefore = null } = options;
+        const index = rows.querySelectorAll('[data-row]').length;
+        const html = template.innerHTML.replaceAll('__INDEX__', String(index));
+        if (insertBefore) {
+            insertBefore.insertAdjacentHTML('beforebegin', html);
+        } else {
+            rows.insertAdjacentHTML('beforeend', html);
+        }
+        const row = insertBefore
+            ? insertBefore.previousElementSibling
+            : rows.querySelector('[data-row]:last-child');
+
+        row.dataset.comboId = String(comboId);
+        row.dataset.comboGroup = String(groupId);
+        row.dataset.freeShipping = line.free_shipping === '1' ? '1' : '0';
+
+        const comboHidden = document.createElement('input');
+        comboHidden.type = 'hidden';
+        comboHidden.name = `items[${index}][combo_id]`;
+        comboHidden.value = String(comboId);
+        row.prepend(comboHidden);
+
+        const productSelect = row.querySelector('[data-product]');
+        const productField = productSelect.parentElement;
+        const productHidden = document.createElement('input');
+        productHidden.type = 'hidden';
+        productHidden.name = `items[${index}][product_id]`;
+        productHidden.value = line.product_id;
+
+        if (isPicker) {
+            // Select editable con el combo; el product_id real va en hidden.
+            productSelect.removeAttribute('name');
+            productSelect.required = false;
+            productSelect.dataset.comboPicker = '1';
+            productSelect.value = `combo:${comboId}`;
+            productSelect.insertAdjacentElement('afterend', productHidden);
+            const note = document.createElement('p');
+            note.className = 'muted';
+            note.style.cssText = 'margin:.25rem 0 0;font-size:.78rem';
+            note.textContent = `Combo: ${comboLabel} · incluye ${line.label}`;
+            productField.appendChild(note);
+            window.initSearchableSelects?.(productSelect);
+            if (productSelect.tomselect) {
+                productSelect.tomselect.setValue(`combo:${comboId}`, true);
+            }
+        } else {
+            window.destroySearchableSelect?.(productSelect);
+            productSelect.remove();
+            const labelEl = document.createElement('div');
+            labelEl.style.cssText = 'padding:.55rem 0;font-weight:500';
+            labelEl.textContent = line.label;
+            productField.appendChild(labelEl);
+            productField.appendChild(productHidden);
+            const note = document.createElement('p');
+            note.className = 'muted';
+            note.style.cssText = 'margin:.25rem 0 0;font-size:.78rem';
+            note.textContent = 'Parte del combo: ' + comboLabel;
+            productField.appendChild(note);
+        }
+
+        const qty = row.querySelector('[data-qty]');
+        qty.value = line.quantity;
+        qty.readOnly = true;
+
+        const price = row.querySelector('[data-price-input]');
+        price.value = Number(line.unit_price_with_vat).toFixed(2);
+        price.readOnly = true;
+        price.dataset.manual = '1';
+        const hint = row.querySelector('[data-price-hint]');
+        if (hint) hint.textContent = 'Precio de combo';
+
+        row.querySelector('[data-disc-pct]').readOnly = true;
+        row.querySelector('[data-disc-amt]').readOnly = true;
+    };
+
     rows?.addEventListener('click', (e) => {
         if (e.target.closest('.remove-item-row')) {
             const row = e.target.closest('[data-row]');
+            const comboGroup = row?.dataset?.comboGroup;
+            if (comboGroup) {
+                [...rows.querySelectorAll(`[data-row][data-combo-group="${comboGroup}"]`)].forEach((comboRow) => {
+                    comboRow.querySelectorAll('select').forEach((el) => window.destroySearchableSelect?.(el));
+                    comboRow.remove();
+                });
+                if (!rows.querySelector('[data-row]')) {
+                    document.getElementById('add-item-row')?.click();
+                }
+                reindex();
+                syncShippingFromProducts(false);
+                recalc();
+                return;
+            }
             if (rows.querySelectorAll('[data-row]').length > 1) {
                 row.querySelectorAll('select').forEach((el) => window.destroySearchableSelect?.(el));
                 row.remove();
@@ -656,15 +853,13 @@
         }
     });
 
+    // Solo searchable:change (Tom Select). El change nativo también dispara y duplicaría combos.
     rows?.addEventListener('searchable:change', (e) => {
         if (e.target.matches?.('[data-product]')) {
             onProductChanged(e.target);
         }
     });
     rows?.addEventListener('change', (e) => {
-        if (e.target.matches('[data-product]')) {
-            onProductChanged(e.target);
-        }
         if (e.target.matches('[data-qty]')) {
             applyRowPrice(e.target.closest('[data-row]'), false);
             recalc();

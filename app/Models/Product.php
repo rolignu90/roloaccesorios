@@ -25,6 +25,7 @@ class Product extends Model
         'min_stock',
         'is_active',
         'free_shipping',
+        'on_demand',
     ];
 
     public const PROMO_AMOUNT = 'amount';
@@ -42,6 +43,7 @@ class Product extends Model
             'min_stock' => 'integer',
             'is_active' => 'boolean',
             'free_shipping' => 'boolean',
+            'on_demand' => 'boolean',
         ];
     }
 
@@ -106,6 +108,10 @@ class Product extends Model
 
     public function isBelowMinStock(?int $stockOnHand = null): bool
     {
+        if ($this->on_demand) {
+            return false;
+        }
+
         $min = (int) $this->min_stock;
         if ($min <= 0) {
             return false;
@@ -132,6 +138,31 @@ class Product extends Model
         }
 
         return round($prices->avg(), 2);
+    }
+
+    /** Estimated unit cost for on-demand shortfall (preferred supplier, average, or last lot). */
+    public function estimatedUnitCost(): float
+    {
+        $this->loadMissing('productSuppliers');
+
+        $preferred = $this->productSuppliers->firstWhere('is_preferred', true)
+            ?? $this->productSuppliers->sortByDesc('id')->first();
+
+        if ($preferred && $preferred->purchase_price !== null) {
+            return round((float) $preferred->purchase_price, 2);
+        }
+
+        $avg = $this->averagePurchasePrice();
+        if ($avg !== null) {
+            return $avg;
+        }
+
+        $lastLot = $this->inventoryLots()
+            ->orderByDesc('received_at')
+            ->orderByDesc('id')
+            ->value('purchase_price');
+
+        return $lastLot !== null ? round((float) $lastLot, 2) : 0.0;
     }
 
     public function salePriceWithVat(): float

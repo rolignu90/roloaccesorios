@@ -8,6 +8,7 @@ use App\Http\Requests\Sales\StoreSaleRequest;
 use App\Http\Requests\Sales\UpdateSaleCustomerRequest;
 use App\Http\Requests\Sales\UpdateSaleItemRequest;
 use App\Http\Requests\Sales\UpdateSaleShippingRequest;
+use App\Models\Combo;
 use App\Models\Customer;
 use App\Models\Product;
 use App\Models\Sale;
@@ -17,6 +18,7 @@ use App\Models\ShippingCarrier;
 use App\Services\CustomerPricingService;
 use App\Services\SaleLabelExportService;
 use App\Services\SaleService;
+use App\Services\SistrackSyncService;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -34,13 +36,19 @@ class SaleController extends Controller
         private SaleService $sales,
         private SaleLabelExportService $labelExport,
         private CustomerPricingService $customerPricing,
+        private SistrackSyncService $sistrack,
     ) {
     }
 
     public function index(Request $request): View|JsonResponse
     {
+        $stuckCount = Sale::query()->stuckInTransit(7)->count();
+        $pendingSyncCount = Sale::query()->pendingSistrackStatusSync()->count();
+
         $sales = Sale::query()
-            ->with(['customer', 'seller'])
+            ->with(['customer', 'seller', 'shippingCarrier'])
+            ->when($request->boolean('stuck_in_transit'), fn ($q) => $q->stuckInTransit(7))
+            ->when($request->boolean('pending_sync'), fn ($q) => $q->pendingSistrackStatusSync())
             ->when($request->filled('q'), function ($query) use ($request) {
                 $term = $request->string('q')->toString();
                 $query->where(function ($inner) use ($term) {
@@ -83,7 +91,7 @@ class SaleController extends Controller
 
         $sellers = Seller::query()->orderBy('name')->get(['id', 'code', 'name']);
 
-        return view('sales.sales.index', compact('sales', 'sellers'));
+        return view('sales.sales.index', compact('sales', 'sellers', 'stuckCount', 'pendingSyncCount'));
     }
 
     public function create(): View
@@ -103,6 +111,14 @@ class SaleController extends Controller
             ->withSum('inventoryLots as stock_on_hand', 'quantity_remaining')
             ->orderBy('name')
             ->get();
+
+        $combos = Combo::query()
+            ->where('is_active', true)
+            ->with(['items.product' => fn ($q) => $q->withSum('inventoryLots as stock_on_hand', 'quantity_remaining')])
+            ->orderBy('name')
+            ->get()
+            ->map(fn (Combo $combo) => $combo->toSaleCatalogEntry())
+            ->values();
 
         $selectedSellerId = old('seller_id', request('seller_id'));
         $nextNumber = $sellers->firstWhere('id', (int) $selectedSellerId)?->next_sale_number
@@ -127,6 +143,7 @@ class SaleController extends Controller
             'customers' => $customers,
             'sellers' => $sellers,
             'products' => $products,
+            'combos' => $combos,
             'shippingCarriers' => $shippingCarriers,
             'defaultShippingCarrierId' => $shippingCarriers->first()?->id,
             'paymentMethods' => config('sales.payment_methods'),
@@ -198,6 +215,7 @@ class SaleController extends Controller
             'seller',
             'shippingCarrier',
             'items.product',
+            'items.combo',
             'items.lotAllocations.inventoryLot',
         ]);
 
@@ -332,5 +350,260 @@ class SaleController extends Controller
         }
 
         return $this->labelExport->downloadCsvForDate($date);
+    }
+
+    public function sendToSistrack(Request $request, Sale $sale): RedirectResponse|JsonResponse
+    {
+        try {
+            $updated = $this->sistrack->sendOne($sale);
+        } catch (Throwable $e) {
+            if ($request->expectsJson() || $request->ajax()) {
+                return response()->json([
+                    'ok' => false,
+                    'sale_id' => $sale->id,
+                    'number' => $sale->number,
+                    'message' => $e->getMessage(),
+                    'sistrack_status' => $sale->fresh()?->sistrack_status,
+                ], 422);
+            }
+
+            return back()->withErrors(['sistrack' => $e->getMessage()]);
+        }
+
+        if ($request->expectsJson() || $request->ajax()) {
+            return response()->json([
+                'ok' => true,
+                'sale_id' => $updated->id,
+                'number' => $updated->number,
+                'sistrack_status' => $updated->sistrack_status,
+                'sistrack_external_id' => $updated->sistrack_external_id,
+                'message' => 'Venta enviada a Sistrack correctamente.',
+            ]);
+        }
+
+        return back()->with('success', 'Venta enviada a Sistrack correctamente.');
+    }
+
+    public function sendManyToSistrack(Request $request): RedirectResponse
+    {
+        $request->validate([
+            'sale_ids' => ['required', 'array', 'min:1'],
+            'sale_ids.*' => ['integer', 'exists:sales,id'],
+        ]);
+
+        $sales = Sale::query()
+            ->with(['customer', 'seller', 'items.product', 'shippingCarrier'])
+            ->whereIn('id', $request->input('sale_ids', []))
+            ->get();
+
+        $result = $this->sistrack->sendMany($sales);
+        $sentCount = count($result['sent']);
+        $failedCount = count($result['failed']);
+        $skippedCount = count($result['skipped']);
+
+        if ($failedCount > 0) {
+            $details = collect($result['failed'])
+                ->map(fn (array $row) => $row['sale']->number.': '.$row['error'])
+                ->take(5)
+                ->implode(' | ');
+
+            return back()->withErrors([
+                'sistrack' => "Enviadas: {$sentCount}. Fallidas: {$failedCount}. Omitidas: {$skippedCount}. ".$details,
+            ])->with('success', $sentCount > 0
+                ? "Se enviaron {$sentCount} venta(s) a Sistrack. Las fallidas quedan para reintentar."
+                : null);
+        }
+
+        return back()->with(
+            'success',
+            "Sistrack: {$sentCount} enviada(s), {$skippedCount} omitida(s)."
+        );
+    }
+
+    public function syncSistrackStatus(Request $request, Sale $sale): RedirectResponse|JsonResponse
+    {
+        try {
+            $result = $this->sistrack->syncOneStatus($sale);
+            $updated = $result['sale'];
+        } catch (Throwable $e) {
+            if ($request->expectsJson() || $request->ajax()) {
+                return response()->json([
+                    'ok' => false,
+                    'sale_id' => $sale->id,
+                    'number' => $sale->number,
+                    'message' => $e->getMessage(),
+                    'status' => $sale->fresh()?->status,
+                    'status_label' => $sale->fresh()?->statusLabel(),
+                ], 422);
+            }
+
+            return back()->withErrors(['sistrack' => $e->getMessage()]);
+        }
+
+        $message = $result['changed']
+            ? 'Estado actualizado a '.$updated->statusLabel().'.'
+            : 'Sin cambios (Sistrack: '.($updated->sistrack_shipping_status ?: '—').').';
+
+        if ($request->expectsJson() || $request->ajax()) {
+            return response()->json([
+                'ok' => true,
+                'changed' => $result['changed'],
+                'sale_id' => $updated->id,
+                'number' => $updated->number,
+                'status' => $updated->status,
+                'status_label' => $updated->statusLabel(),
+                'status_badge' => $updated->statusBadgeClass(),
+                'sistrack_shipping_status' => $updated->sistrack_shipping_status,
+                'message' => $message,
+            ]);
+        }
+
+        return back()->with('success', $message);
+    }
+
+    public function syncManySistrackStatus(Request $request): RedirectResponse
+    {
+        $request->validate([
+            'sale_ids' => ['nullable', 'array'],
+            'sale_ids.*' => ['integer', 'exists:sales,id'],
+        ]);
+
+        $ids = $request->input('sale_ids', []);
+        $sales = filled($ids)
+            ? Sale::query()->with('shippingCarrier')->whereIn('id', $ids)->get()
+            : Sale::query()->with('shippingCarrier')->pendingSistrackStatusSync()->orderBy('sold_at')->limit(500)->get();
+
+        if ($sales->isEmpty()) {
+            return back()->with('success', 'No hay ventas pendientes de sincronizar.');
+        }
+
+        $result = $this->sistrack->syncStatuses($sales);
+        $updated = count($result['updated']);
+        $failed = count($result['failed']);
+        $unchanged = count($result['unchanged']);
+
+        if ($failed > 0) {
+            $details = collect($result['failed'])
+                ->map(fn (array $row) => $row['sale']->number.': '.$row['error'])
+                ->take(5)
+                ->implode(' | ');
+
+            return back()->withErrors([
+                'sistrack' => "Actualizadas: {$updated}. Sin cambio: {$unchanged}. Fallidas: {$failed}. ".$details,
+            ]);
+        }
+
+        return back()->with(
+            'success',
+            "Estados Sistrack: {$updated} actualizada(s), {$unchanged} sin cambio."
+        );
+    }
+
+    public function pendingSistrackStatusSync(): JsonResponse
+    {
+        $sales = Sale::query()
+            ->pendingSistrackStatusSync()
+            ->orderBy('sold_at')
+            ->limit(500)
+            ->get(['id', 'number']);
+
+        return response()->json([
+            'count' => $sales->count(),
+            'sales' => $sales->map(fn (Sale $sale) => [
+                'id' => $sale->id,
+                'number' => $sale->number,
+                'sync_url' => route('sales.sales.sync-sistrack-status.one', $sale),
+            ])->values(),
+        ]);
+    }
+
+    public function markDelivered(Request $request, Sale $sale): RedirectResponse|JsonResponse
+    {
+        try {
+            $updated = $this->sales->markDelivered($sale);
+        } catch (Throwable $e) {
+            if ($request->expectsJson() || $request->ajax()) {
+                return response()->json([
+                    'ok' => false,
+                    'sale_id' => $sale->id,
+                    'number' => $sale->number,
+                    'message' => $e->getMessage(),
+                ], 422);
+            }
+
+            return back()->withErrors(['status' => $e->getMessage()]);
+        }
+
+        if ($request->expectsJson() || $request->ajax()) {
+            return response()->json([
+                'ok' => true,
+                'sale_id' => $updated->id,
+                'number' => $updated->number,
+                'status' => $updated->status,
+                'status_label' => $updated->statusLabel(),
+                'message' => 'Venta marcada como entregada.',
+            ]);
+        }
+
+        return back()->with('success', 'Venta marcada como entregada.');
+    }
+
+    public function markManyDelivered(Request $request): RedirectResponse
+    {
+        $request->validate([
+            'sale_ids' => ['required', 'array', 'min:1'],
+            'sale_ids.*' => ['integer', 'exists:sales,id'],
+        ]);
+
+        $sales = Sale::query()->whereIn('id', $request->input('sale_ids', []))->get();
+        $ok = 0;
+        $fail = 0;
+
+        foreach ($sales as $sale) {
+            try {
+                $this->sales->markDelivered($sale);
+                $ok++;
+            } catch (Throwable) {
+                $fail++;
+            }
+        }
+
+        return back()->with(
+            'success',
+            "Marcadas entregadas: {$ok}".($fail ? ". Fallidas: {$fail}." : '.')
+        );
+    }
+
+    public function voidMany(Request $request): RedirectResponse
+    {
+        $request->validate([
+            'sale_ids' => ['required', 'array', 'min:1'],
+            'sale_ids.*' => ['integer', 'exists:sales,id'],
+        ]);
+
+        $sales = Sale::query()->whereIn('id', $request->input('sale_ids', []))->get();
+        $ok = 0;
+        $fail = 0;
+        $errors = [];
+
+        foreach ($sales as $sale) {
+            try {
+                $this->sales->void($sale);
+                $ok++;
+            } catch (Throwable $e) {
+                $fail++;
+                if (count($errors) < 5) {
+                    $errors[] = $sale->number.': '.$e->getMessage();
+                }
+            }
+        }
+
+        if ($fail > 0) {
+            return back()->withErrors([
+                'status' => "Anuladas: {$ok}. Fallidas: {$fail}. ".implode(' | ', $errors),
+            ]);
+        }
+
+        return back()->with('success', "Se anularon {$ok} venta(s) y se restauró stock.");
     }
 }

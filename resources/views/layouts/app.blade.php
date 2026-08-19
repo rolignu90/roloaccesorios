@@ -316,6 +316,56 @@
         .btn-link { background: transparent; color: var(--ink); padding: 0; border: 0; }
         .btn-link:hover { color: var(--signal); background: transparent; transform: none; }
         .actions { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; }
+        .pagination {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: .75rem 1rem;
+            margin-top: .25rem;
+        }
+        .pagination-meta { margin: 0; font-size: .9rem; }
+        .pagination-links {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: .35rem;
+            align-items: center;
+        }
+        .pagination-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 2.35rem;
+            padding: .45rem .7rem;
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            background: #fff;
+            color: var(--ink);
+            text-decoration: none;
+            font: inherit;
+            font-size: .9rem;
+            font-weight: 600;
+            line-height: 1.2;
+        }
+        a.pagination-btn:hover {
+            background: var(--ink);
+            border-color: var(--ink);
+            color: #fff;
+            text-decoration: none;
+        }
+        .pagination-btn.is-current {
+            background: var(--ink);
+            border-color: var(--ink);
+            color: #fff;
+        }
+        .pagination-btn.is-disabled {
+            opacity: .45;
+            cursor: not-allowed;
+            background: #f3f2ef;
+        }
         .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
         .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
         label { display: block; font-size: .88rem; margin-bottom: .35rem; color: #333; font-weight: 500; }
@@ -351,6 +401,7 @@
             color: var(--ink);
             box-shadow: none;
             min-height: 2.65rem;
+            cursor: text;
         }
         .ts-wrapper.single .ts-control input {
             font: inherit;
@@ -372,7 +423,8 @@
         .ts-dropdown .option:hover { background: rgba(232, 93, 4, .12); color: var(--ink); }
         .ts-dropdown .create,
         .ts-dropdown .no-results { padding: .55rem .75rem; color: var(--muted); }
-        .ts-wrapper.disabled .ts-control { background: #f0efec; opacity: .85; }
+        .ts-wrapper.disabled .ts-control { background: #f0efec; opacity: .85; cursor: not-allowed; }
+        .ts-wrapper .clear-button { color: var(--muted); cursor: pointer; }
         .search .ts-wrapper { min-width: 180px; flex: 1; }
         textarea { min-height: 90px; resize: vertical; }
         .field { margin-bottom: 1rem; }
@@ -629,6 +681,8 @@
                 grid-template-columns: 1fr;
             }
             h1 { font-size: 1.55rem; }
+            .pagination { flex-direction: column; align-items: stretch; }
+            .pagination-links { justify-content: center; }
         }
         @media (max-width: 480px) {
             .main { padding: .85rem .75rem 1.75rem; }
@@ -662,9 +716,12 @@
             <div class="nav-label">Inventario</div>
             <a href="{{ route('inventory.dashboard') }}" class="{{ request()->routeIs('inventory.dashboard') ? 'active' : '' }}">Dashboard</a>
             <a href="{{ route('inventory.products.index') }}" class="{{ request()->routeIs('inventory.products.index', 'inventory.products.show', 'inventory.products.create', 'inventory.products.edit', 'inventory.products.store', 'inventory.products.update') ? 'active' : '' }}">Productos</a>
+            <a href="{{ route('inventory.combos.index') }}" class="{{ request()->routeIs('inventory.combos.*') ? 'active' : '' }}">Combos</a>
             <a href="{{ route('inventory.products.bulk-prices') }}" class="{{ request()->routeIs('inventory.products.bulk-prices*') ? 'active' : '' }}">Precios masivos</a>
             <a href="{{ route('inventory.free-shipping.index') }}" class="{{ request()->routeIs('inventory.free-shipping.*') ? 'active' : '' }}">Envío gratis</a>
+            <a href="{{ route('inventory.on-demand.index') }}" class="{{ request()->routeIs('inventory.on-demand.*') ? 'active' : '' }}">On demand</a>
             <a href="{{ route('inventory.suppliers.index') }}" class="{{ request()->routeIs('inventory.suppliers.*') ? 'active' : '' }}">Proveedores</a>
+            <a href="{{ route('inventory.payables.index') }}" class="{{ request()->routeIs('inventory.payables.*') ? 'active' : '' }}">Cuentas por pagar</a>
             <a href="{{ route('inventory.stock.index') }}" class="{{ request()->routeIs('inventory.stock.*') ? 'active' : '' }}">Entradas de stock</a>
             <a href="{{ route('inventory.movements.index') }}" class="{{ request()->routeIs('inventory.movements.*') ? 'active' : '' }}">Historial movimientos</a>
             <div class="nav-label">Ventas</div>
@@ -675,8 +732,10 @@
             <div class="nav-label">Consignación</div>
             <a href="{{ route('consignments.dashboard') }}" class="{{ request()->routeIs('consignments.dashboard') ? 'active' : '' }}">Dashboard</a>
             <a href="{{ route('consignments.index') }}" class="{{ request()->routeIs('consignments.index', 'consignments.show', 'consignments.create', 'consignments.store') ? 'active' : '' }}">Entregas</a>
+            <a href="{{ route('consignments.monthly-products') }}" class="{{ request()->routeIs('consignments.monthly-products') ? 'active' : '' }}">Por mes / producto</a>
             <div class="nav-label">Finanzas</div>
-            <a href="{{ route('costs.dashboard') }}" class="{{ request()->routeIs('costs.*') ? 'active' : '' }}">Costos</a>
+            <a href="{{ route('costs.dashboard') }}" class="{{ request()->routeIs('costs.dashboard', 'costs.margins', 'costs.expenses.*') ? 'active' : '' }}">Costos</a>
+            <a href="{{ route('costs.sellers') }}" class="{{ request()->routeIs('costs.sellers') ? 'active' : '' }}">Ventas por vendedor</a>
         </nav>
         <div class="sidebar-footer">
             <form method="POST" action="{{ route('logout') }}">

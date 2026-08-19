@@ -45,6 +45,71 @@
     </label>
 </div>
 
+<div class="card" style="margin:1rem 0;padding:1rem;background:#f9fafb" data-sistrack-box>
+    <div class="field" style="margin-bottom:.75rem">
+        <input type="hidden" name="sistrack_enabled" value="0">
+        <label style="display:flex;align-items:center;gap:.5rem;font-weight:500;cursor:pointer">
+            <input
+                type="checkbox"
+                name="sistrack_enabled"
+                value="1"
+                data-sistrack-toggle
+                @checked(old('sistrack_enabled', $carrier?->sistrack_enabled ?? false))
+            >
+            Integración Sistrack (crear etiquetas / órdenes)
+        </label>
+        <p class="muted" style="margin:.35rem 0 0">Actívalo solo para empresas como Express El Salvador.</p>
+    </div>
+
+    <div data-sistrack-fields @style(['display:none' => ! old('sistrack_enabled', $carrier?->sistrack_enabled ?? false)])>
+        <div class="grid-2">
+            <div class="field">
+                <label for="sistrack_base_url">URL Sistrack</label>
+                <input
+                    id="sistrack_base_url"
+                    type="url"
+                    name="sistrack_base_url"
+                    value="{{ old('sistrack_base_url', $carrier?->sistrack_base_url ?: 'https://expresselsalvador.sistrack.net') }}"
+                    placeholder="https://expresselsalvador.sistrack.net"
+                >
+            </div>
+            <div class="field">
+                <label for="sistrack_sender_id">Sender ID</label>
+                <input
+                    id="sistrack_sender_id"
+                    type="number"
+                    min="1"
+                    name="sistrack_sender_id"
+                    value="{{ old('sistrack_sender_id', $carrier?->sistrack_sender_id ?: 67306) }}"
+                >
+            </div>
+        </div>
+        <div class="grid-2">
+            <div class="field">
+                <label for="sistrack_email">Correo Sistrack</label>
+                <input
+                    id="sistrack_email"
+                    type="email"
+                    name="sistrack_email"
+                    value="{{ old('sistrack_email', $carrier?->sistrack_email) }}"
+                    autocomplete="off"
+                >
+            </div>
+            <div class="field">
+                <label for="sistrack_password">Contraseña Sistrack</label>
+                <input
+                    id="sistrack_password"
+                    type="password"
+                    name="sistrack_password"
+                    value=""
+                    autocomplete="new-password"
+                    placeholder="{{ $carrier?->sistrack_password ? '•••••••• (dejar vacío para no cambiar)' : '' }}"
+                >
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 (() => {
     const typeSelect = document.querySelector('[data-commission-type]');
@@ -61,5 +126,14 @@
     };
     typeSelect?.addEventListener('change', sync);
     sync();
+
+    const toggle = document.querySelector('[data-sistrack-toggle]');
+    const fields = document.querySelector('[data-sistrack-fields]');
+    const syncSistrack = () => {
+        if (!fields) return;
+        fields.style.display = toggle?.checked ? '' : 'none';
+    };
+    toggle?.addEventListener('change', syncSistrack);
+    syncSistrack();
 })();
 </script>

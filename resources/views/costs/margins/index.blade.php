@@ -6,7 +6,7 @@
 <div class="topbar">
     <div>
         <h1>Márgenes detallados</h1>
-        <p class="muted">Por venta y por producto (con y sin IVA). El envío no entra al margen.</p>
+        <p class="muted">Por venta y por producto. El margen real descuenta costo de courier y comisión COD (p. ej. envío gratis).</p>
     </div>
     <a class="btn btn-secondary" href="{{ route('costs.dashboard') }}">Dashboard</a>
 </div>
@@ -67,8 +67,11 @@
                 <th>Ventas s/IVA</th>
                 <th>Ventas c/IVA</th>
                 <th>COGS</th>
-                <th>Margen s/IVA</th>
-                <th>Margen c/IVA</th>
+                <th>Margen prod. s/IVA</th>
+                <th>Margen prod. c/IVA</th>
+                <th>Envío neto</th>
+                <th>Margen real s/IVA</th>
+                <th>Margen real c/IVA</th>
             </tr>
         </thead>
         <tbody>
@@ -81,9 +84,12 @@
                     <td>{{ money($row->cogs_total) }}</td>
                     <td>{{ money($row->gross_margin) }}</td>
                     <td>{{ money($row->gross_margin_with_vat) }}</td>
+                    <td>{{ money($row->shipping_net) }}</td>
+                    <td>{{ money($row->real_margin) }}</td>
+                    <td>{{ money($row->real_margin_with_vat) }}</td>
                 </tr>
             @empty
-                <tr><td colspan="7" class="muted">Sin datos.</td></tr>
+                <tr><td colspan="10" class="muted">Sin datos.</td></tr>
             @endforelse
         </tbody>
     </table>

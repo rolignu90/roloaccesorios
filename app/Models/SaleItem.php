@@ -14,6 +14,7 @@ class SaleItem extends Model
     protected $fillable = [
         'sale_id',
         'product_id',
+        'combo_id',
         'quantity',
         'unit_price_without_vat',
         'discount_percent',
@@ -46,6 +47,11 @@ class SaleItem extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);
+    }
+
+    public function combo(): BelongsTo
+    {
+        return $this->belongsTo(Combo::class);
     }
 
     public function lotAllocations(): HasMany

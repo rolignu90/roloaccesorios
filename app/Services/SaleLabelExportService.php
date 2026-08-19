@@ -32,8 +32,12 @@ class SaleLabelExportService
     {
         $sales = Sale::query()
             ->with(['customer', 'seller', 'items.product'])
-            ->where('status', Sale::STATUS_CONFIRMED)
+            ->revenue()
             ->where('has_shipping', true)
+            ->where(function ($query) {
+                $query->whereNull('sistrack_status')
+                    ->orWhere('sistrack_status', '!=', Sale::SISTRACK_SENT);
+            })
             ->whereDate('sold_at', $date->toDateString())
             ->orderBy('sold_at')
             ->get();
@@ -60,8 +64,12 @@ class SaleLabelExportService
         $sales = Sale::query()
             ->with(['customer', 'seller', 'items.product'])
             ->whereIn('id', $ids)
-            ->where('status', Sale::STATUS_CONFIRMED)
+            ->revenue()
             ->where('has_shipping', true)
+            ->where(function ($query) {
+                $query->whereNull('sistrack_status')
+                    ->orWhere('sistrack_status', '!=', Sale::SISTRACK_SENT);
+            })
             ->orderBy('sold_at')
             ->get();
 
@@ -107,7 +115,7 @@ class SaleLabelExportService
         return $sales->map(fn (Sale $sale) => $this->mapSale($sale));
     }
 
-    private function mapSale(Sale $sale): array
+    public function mapSale(Sale $sale): array
     {
         $customer = $sale->customer;
         $prefix = rtrim((string) ($sale->seller?->saleNumberPrefix() ?? 'V-'), '-');

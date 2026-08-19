@@ -52,7 +52,12 @@ class ShippingCarrierController extends Controller
 
     public function update(UpdateShippingCarrierRequest $request, ShippingCarrier $shippingCarrier): RedirectResponse
     {
-        $shippingCarrier->update($request->validated());
+        $data = $request->validated();
+        if (! filled($data['sistrack_password'] ?? null)) {
+            unset($data['sistrack_password']);
+        }
+
+        $shippingCarrier->update($data);
 
         return redirect()
             ->route('sales.shipping-carriers.index')

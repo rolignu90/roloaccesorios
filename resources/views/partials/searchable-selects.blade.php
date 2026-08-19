@@ -35,10 +35,20 @@
             if (el.closest('template')) return;
             if (el.tomselect) return;
 
-            const ts = new TomSelect(el, {
+            const wasDisabled = el.disabled === true;
+            // Inicializar aunque esté disabled (p. ej. panel de cliente oculto)
+            // y luego deshabilitar el control Tom Select.
+            if (wasDisabled) el.disabled = false;
+
+            const isMultiple = el.multiple === true;
+
+            // Importante: NO poner maxItems:1 en selects normales.
+            // Eso fuerza modo "multi con límite 1" y bloquea cambiar la opción.
+            const options = {
                 allowEmptyOption: true,
                 create: false,
                 maxOptions: null,
+                closeAfterSelect: true,
                 placeholder: defaultPlaceholder(el),
                 plugins: {
                     clear_button: { title: 'Limpiar' },
@@ -46,7 +56,15 @@
                 render: {
                     no_results: () => '<div class="no-results">Sin resultados</div>',
                 },
-            });
+            };
+
+            if (isMultiple) {
+                options.maxItems = null;
+                options.plugins.remove_button = { title: 'Quitar' };
+                options.closeAfterSelect = false;
+            }
+
+            const ts = new TomSelect(el, options);
 
             // Evento propio con bubbles para formularios que usan delegación.
             ts.on('change', (value) => {
@@ -55,6 +73,11 @@
                     detail: { value },
                 }));
             });
+
+            if (wasDisabled) {
+                el.disabled = true;
+                ts.disable();
+            }
         });
     };
 

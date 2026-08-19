@@ -8,10 +8,12 @@ use App\Http\Requests\Inventory\StoreProductRequest;
 use App\Http\Requests\Inventory\UpdateProductRequest;
 use App\Models\Product;
 use App\Models\Supplier;
+use App\Services\ProductPriceExportService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class ProductController extends Controller
 {
@@ -170,6 +172,11 @@ class ProductController extends Controller
         return redirect()
             ->route('inventory.products.index')
             ->with('success', 'Producto eliminado correctamente.');
+    }
+
+    public function export(Request $request, ProductPriceExportService $export): StreamedResponse
+    {
+        return $export->downloadFromRequest($request);
     }
 
     public function bulkPrices(Request $request): View

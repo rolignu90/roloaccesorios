@@ -64,6 +64,23 @@ class ConsignmentController extends Controller
         return view('consignments.index', compact('consignments'));
     }
 
+    public function monthlyProducts(Request $request): View
+    {
+        $from = $request->filled('from')
+            ? Carbon::parse($request->string('from'))->startOfDay()
+            : now()->startOfMonth();
+        $to = $request->filled('to')
+            ? Carbon::parse($request->string('to'))->endOfDay()
+            : now()->endOfDay();
+
+        $partyType = $request->input('party_type');
+        $search = $request->filled('q') ? $request->string('q')->toString() : null;
+
+        $rows = $this->dashboard->monthlyDeliveredQuantities($from, $to, $partyType, $search);
+
+        return view('consignments.monthly-products', compact('rows', 'from', 'to'));
+    }
+
     public function create(): View
     {
         $sellers = Seller::query()->where('is_active', true)->orderBy('name')->get();

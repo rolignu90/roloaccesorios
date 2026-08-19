@@ -11,7 +11,7 @@
 <div class="topbar">
     <div>
         <h1>Nueva consignación</h1>
-        <p class="muted">Número tentativo: {{ $nextNumber }} · Descuenta stock FIFO</p>
+        <p class="muted">Número tentativo: {{ $nextNumber }} · Descuenta stock FIFO · on demand si no hay inventario</p>
     </div>
     <a class="btn btn-secondary" href="{{ route('consignments.index') }}">Volver</a>
 </div>
@@ -82,13 +82,20 @@
                                         value="{{ $product->id }}"
                                         data-price="{{ $product->wholesalePriceWithVat() !== null ? number_format($product->wholesalePriceWithVat(), 2, '.', '') : '' }}"
                                         data-sale-price="{{ number_format($product->salePriceWithVat(), 2, '.', '') }}"
+                                        data-stock="{{ (int) ($product->stock_on_hand ?? 0) }}"
+                                        data-on-demand="{{ $product->on_demand ? '1' : '0' }}"
                                         @selected(($item['product_id'] ?? '') == $product->id)
                                     >
                                         {{ $product->code }} — {{ $product->name }}
                                         @if ($product->wholesalePriceWithVat() !== null)
                                             (reventa {{ money($product->wholesalePriceWithVat()) }})
                                         @endif
-                                        (stock {{ (int) ($product->stock_on_hand ?? 0) }})
+                                        @if ($product->on_demand)
+                                            · on demand
+                                            (stock {{ (int) ($product->stock_on_hand ?? 0) }} · se puede sin stock)
+                                        @else
+                                            (stock {{ (int) ($product->stock_on_hand ?? 0) }})
+                                        @endif
                                     </option>
                                 @endforeach
                             </select>
@@ -130,12 +137,19 @@
                         value="{{ $product->id }}"
                         data-price="{{ $product->wholesalePriceWithVat() !== null ? number_format($product->wholesalePriceWithVat(), 2, '.', '') : '' }}"
                         data-sale-price="{{ number_format($product->salePriceWithVat(), 2, '.', '') }}"
+                        data-stock="{{ (int) ($product->stock_on_hand ?? 0) }}"
+                        data-on-demand="{{ $product->on_demand ? '1' : '0' }}"
                     >
                         {{ $product->code }} — {{ $product->name }}
                         @if ($product->wholesalePriceWithVat() !== null)
                             (reventa {{ money($product->wholesalePriceWithVat()) }})
                         @endif
-                        (stock {{ (int) ($product->stock_on_hand ?? 0) }})
+                        @if ($product->on_demand)
+                            · on demand
+                            (stock {{ (int) ($product->stock_on_hand ?? 0) }} · se puede sin stock)
+                        @else
+                            (stock {{ (int) ($product->stock_on_hand ?? 0) }})
+                        @endif
                     </option>
                 @endforeach
             </select>

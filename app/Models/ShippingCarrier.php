@@ -27,6 +27,15 @@ class ShippingCarrier extends Model
         'commission_value',
         'notes',
         'is_active',
+        'sistrack_enabled',
+        'sistrack_base_url',
+        'sistrack_email',
+        'sistrack_password',
+        'sistrack_sender_id',
+    ];
+
+    protected $hidden = [
+        'sistrack_password',
     ];
 
     protected function casts(): array
@@ -35,12 +44,32 @@ class ShippingCarrier extends Model
             'shipping_cost' => 'decimal:2',
             'commission_value' => 'decimal:4',
             'is_active' => 'boolean',
+            'sistrack_enabled' => 'boolean',
+            'sistrack_password' => 'encrypted',
+            'sistrack_sender_id' => 'integer',
         ];
     }
 
     public function sales(): HasMany
     {
         return $this->hasMany(Sale::class);
+    }
+
+    public function supportsSistrack(): bool
+    {
+        return $this->sistrack_enabled
+            && filled($this->sistrack_email)
+            && filled($this->sistrack_password);
+    }
+
+    public function sistrackBaseUrl(): string
+    {
+        return rtrim((string) ($this->sistrack_base_url ?: config('sistrack.base_url')), '/');
+    }
+
+    public function sistrackSenderId(): int
+    {
+        return (int) ($this->sistrack_sender_id ?: config('sistrack.sender_id', 67306));
     }
 
     public function commissionTypeLabel(): string

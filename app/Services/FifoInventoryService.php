@@ -14,11 +14,14 @@ class FifoInventoryService
 {
     /**
      * Register a new stock receipt as a FIFO lot.
+     * Covers open on-demand sale allocations first (real COGS), leftover stays in lot.
      */
     public function receiveStock(array $data): InventoryLot
     {
         return DB::transaction(function () use ($data) {
             $product = Product::query()->lockForUpdate()->findOrFail($data['product_id']);
+            $quantity = (int) $data['quantity'];
+            $unitPrice = round((float) $data['purchase_price'], 2);
 
             $productSupplier = ProductSupplier::query()
                 ->where('product_id', $product->id)
@@ -29,32 +32,192 @@ class FifoInventoryService
                 'lot_number' => $data['lot_number'] ?? $this->generateLotNumber($product),
                 'product_id' => $product->id,
                 'supplier_id' => $data['supplier_id'],
-                'quantity_received' => $data['quantity'],
-                'quantity_remaining' => $data['quantity'],
-                'purchase_price' => $data['purchase_price'],
+                'quantity_received' => $quantity,
+                'quantity_remaining' => $quantity,
+                'purchase_price' => $unitPrice,
+                'amount_paid' => 0,
                 'received_at' => $data['received_at'],
                 'invoice_reference' => $data['invoice_reference'] ?? null,
                 'notes' => $data['notes'] ?? null,
             ]);
 
             $productSupplier->update([
-                'purchase_price' => $data['purchase_price'],
+                'purchase_price' => $unitPrice,
             ]);
+
+            $covered = $this->coverOnDemandAllocations($lot, $quantity, $unitPrice);
+            $remaining = $quantity - $covered;
+            $lot->update(['quantity_remaining' => $remaining]);
+
+            $note = $data['notes'] ?? ('Entrada lote '.$lot->lot_number);
+            if ($covered > 0) {
+                $note = trim($note.' · cubre '.$covered.' on-demand');
+            }
 
             $this->logMovement([
                 'product_id' => $product->id,
                 'inventory_lot_id' => $lot->id,
                 'type' => InventoryMovement::TYPE_ENTRADA,
-                'quantity' => (int) $data['quantity'],
-                'unit_cost' => $data['purchase_price'],
+                'quantity' => $quantity,
+                'unit_cost' => $unitPrice,
                 'reference_type' => 'inventory_lot',
                 'reference_id' => $lot->id,
                 'occurred_at' => $data['received_at'],
-                'notes' => $data['notes'] ?? ('Entrada lote '.$lot->lot_number),
+                'notes' => $note,
             ]);
 
-            return $lot;
+            $fresh = $lot->fresh();
+            $fresh->setAttribute('on_demand_covered', $covered);
+
+            return $fresh;
         });
+    }
+
+    /**
+     * Units sold on-demand still waiting for a physical lot (for UI hints).
+     */
+    public function pendingOnDemandQuantity(int $productId): int
+    {
+        return (int) \App\Models\SaleLotAllocation::query()
+            ->whereNull('inventory_lot_id')
+            ->whereHas('saleItem', fn ($q) => $q->where('product_id', $productId))
+            ->whereHas('saleItem.sale', fn ($q) => $q->onDemandVisible())
+            ->sum('quantity');
+    }
+
+    /**
+     * Use leftover quantity_remaining on a lot to cover open on-demand sales
+     * (for lots received before cover existed, or manual repair).
+     *
+     * @return int units covered
+     */
+    public function applyLotRemainingToOnDemand(InventoryLot $lot): int
+    {
+        return DB::transaction(function () use ($lot) {
+            $lot = InventoryLot::query()->lockForUpdate()->findOrFail($lot->id);
+            $available = (int) $lot->quantity_remaining;
+            if ($available <= 0) {
+                return 0;
+            }
+
+            $covered = $this->coverOnDemandAllocations(
+                $lot,
+                $available,
+                (float) $lot->purchase_price
+            );
+
+            if ($covered > 0) {
+                $lot->update([
+                    'quantity_remaining' => $available - $covered,
+                ]);
+            }
+
+            return $covered;
+        });
+    }
+
+    /**
+     * Assign incoming stock to oldest open on-demand allocations.
+     *
+     * @return int units covered
+     */
+    private function coverOnDemandAllocations(InventoryLot $lot, int $available, float $unitPrice): int
+    {
+        if ($available <= 0) {
+            return 0;
+        }
+
+        $allocations = \App\Models\SaleLotAllocation::query()
+            ->select('sale_lot_allocations.*')
+            ->join('sale_items', 'sale_items.id', '=', 'sale_lot_allocations.sale_item_id')
+            ->join('sales', 'sales.id', '=', 'sale_items.sale_id')
+            ->whereNull('sale_lot_allocations.inventory_lot_id')
+            ->where('sale_items.product_id', $lot->product_id)
+            ->whereIn('sales.status', \App\Models\Sale::ON_DEMAND_STATUSES)
+            ->orderBy('sales.sold_at')
+            ->orderBy('sale_lot_allocations.id')
+            ->lockForUpdate()
+            ->with(['saleItem.sale'])
+            ->get();
+
+        $toCover = $available;
+        $covered = 0;
+        $affectedSaleIds = [];
+
+        foreach ($allocations as $allocation) {
+            if ($toCover <= 0) {
+                break;
+            }
+
+            $need = (int) $allocation->quantity;
+            if ($need <= 0) {
+                continue;
+            }
+
+            $take = min($need, $toCover);
+            $estimatedPrice = (float) $allocation->purchase_price;
+
+            if ($take === $need) {
+                $allocation->update([
+                    'inventory_lot_id' => $lot->id,
+                    'purchase_price' => $unitPrice,
+                    'cogs_amount' => round($take * $unitPrice, 2),
+                ]);
+            } else {
+                $remainder = $need - $take;
+                $allocation->update([
+                    'quantity' => $take,
+                    'inventory_lot_id' => $lot->id,
+                    'purchase_price' => $unitPrice,
+                    'cogs_amount' => round($take * $unitPrice, 2),
+                ]);
+
+                \App\Models\SaleLotAllocation::query()->create([
+                    'sale_item_id' => $allocation->sale_item_id,
+                    'inventory_lot_id' => null,
+                    'quantity' => $remainder,
+                    'purchase_price' => $estimatedPrice,
+                    'cogs_amount' => round($remainder * $estimatedPrice, 2),
+                ]);
+            }
+
+            $toCover -= $take;
+            $covered += $take;
+            if ($allocation->saleItem?->sale_id) {
+                $affectedSaleIds[] = (int) $allocation->saleItem->sale_id;
+            }
+        }
+
+        foreach (array_unique($affectedSaleIds) as $saleId) {
+            $this->recalculateSaleCogs($saleId);
+        }
+
+        return $covered;
+    }
+
+    private function recalculateSaleCogs(int $saleId): void
+    {
+        $sale = \App\Models\Sale::query()
+            ->with('items.lotAllocations')
+            ->lockForUpdate()
+            ->find($saleId);
+
+        if (! $sale || $sale->isVoided()) {
+            return;
+        }
+
+        $saleCogs = 0.0;
+        foreach ($sale->items as $item) {
+            $itemCogs = round((float) $item->lotAllocations->sum('cogs_amount'), 2);
+            $item->update(['cogs_total' => $itemCogs]);
+            $saleCogs += $itemCogs;
+        }
+
+        $saleCogs = round($saleCogs, 2);
+        $sale->update([
+            'cogs_total' => $saleCogs,
+            'gross_margin' => round((float) $sale->taxable_base - $saleCogs, 2),
+        ]);
     }
 
     /**
@@ -185,8 +348,9 @@ class FifoInventoryService
                 ->get();
 
             $available = (int) $lots->sum('quantity_remaining');
+            $allowOnDemandShortfall = (bool) ($product->on_demand && ($reference['allow_on_demand'] ?? false));
 
-            if ($available < $quantity) {
+            if ($available < $quantity && ! $allowOnDemandShortfall) {
                 throw new RuntimeException(
                     "Stock insuficiente para {$product->code}. Disponible: {$available}, solicitado: {$quantity}."
                 );
@@ -225,6 +389,27 @@ class FifoInventoryService
                 $remaining -= $take;
             }
 
+            if ($remaining > 0 && $allowOnDemandShortfall) {
+                $unitCost = $product->estimatedUnitCost();
+                $allocations[] = [
+                    'lot_id' => null,
+                    'quantity' => $remaining,
+                    'purchase_price' => number_format($unitCost, 2, '.', ''),
+                ];
+
+                $this->logMovement([
+                    'product_id' => $product->id,
+                    'inventory_lot_id' => null,
+                    'type' => $reference['movement_type'] ?? InventoryMovement::TYPE_VENTA,
+                    'quantity' => -1 * $remaining,
+                    'unit_cost' => $unitCost,
+                    'reference_type' => $reference['type'] ?? null,
+                    'reference_id' => $reference['id'] ?? null,
+                    'occurred_at' => $reference['occurred_at'] ?? now(),
+                    'notes' => trim(($reference['notes'] ?? 'Salida por venta').' · on-demand sin stock'),
+                ]);
+            }
+
             return $allocations;
         });
     }
@@ -238,9 +423,15 @@ class FifoInventoryService
     {
         DB::transaction(function () use ($allocations, $reference) {
             foreach ($allocations as $allocation) {
+                $lotId = $allocation['lot_id'] ?? null;
+                if ($lotId === null) {
+                    // On-demand shortfall had no physical lot to restore.
+                    continue;
+                }
+
                 $lot = InventoryLot::query()
                     ->lockForUpdate()
-                    ->findOrFail($allocation['lot_id']);
+                    ->findOrFail($lotId);
 
                 $qty = (int) $allocation['quantity'];
                 $lot->quantity_remaining += $qty;

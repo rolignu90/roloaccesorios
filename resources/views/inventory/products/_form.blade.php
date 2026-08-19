@@ -44,7 +44,13 @@
             <input type="checkbox" name="free_shipping" value="1" @checked(old('free_shipping', $product?->free_shipping ?? false))>
             Envío gratis
         </label>
+        <input type="hidden" name="on_demand" value="0">
+        <label>
+            <input type="checkbox" name="on_demand" value="1" @checked(old('on_demand', $product?->on_demand ?? false))>
+            On demand (vender sin stock)
+        </label>
     </div>
+    <p class="muted" style="margin:.35rem 0 0;width:100%">Si hay stock, primero se agota FIFO; solo lo que falte queda como on demand (para comprar).</p>
 </div>
 <div class="grid-3">
     <div class="field">
@@ -81,7 +87,7 @@
     <div class="field">
         <label for="min_stock">Stock mínimo (alertas) *</label>
         <input id="min_stock" type="number" min="0" name="min_stock" value="{{ old('min_stock', $product?->min_stock ?? 0) }}" required>
-        <p class="muted" style="margin:.35rem 0 0">Si el stock llega a este nivel o menos, se marca en alerta. Usa 0 para no alertar.</p>
+        <p class="muted" style="margin:.35rem 0 0">Si el stock llega a este nivel o menos, se marca en alerta. Usa 0 para no alertar. No aplica a productos on demand.</p>
     </div>
 </div>
 <div class="field">

@@ -3,11 +3,14 @@
 use App\Http\Controllers\Consignments\ConsignmentController;
 use App\Http\Controllers\Costs\CostDashboardController;
 use App\Http\Controllers\Costs\ExpenseController;
+use App\Http\Controllers\Inventory\ComboController;
+use App\Http\Controllers\Inventory\OnDemandSaleController;
 use App\Http\Controllers\Inventory\FreeShippingController;
 use App\Http\Controllers\Inventory\InventoryDashboardController;
 use App\Http\Controllers\Inventory\InventoryMovementController;
 use App\Http\Controllers\Inventory\ProductController;
 use App\Http\Controllers\Inventory\StockReceiptController;
+use App\Http\Controllers\Inventory\SupplierPayableController;
 use App\Http\Controllers\Inventory\SupplierController;
 use App\Http\Controllers\PinAuthController;
 use App\Http\Controllers\Sales\CustomerController;
@@ -27,11 +30,19 @@ Route::middleware('pin.auth')->group(function () {
         Route::get('/', [InventoryDashboardController::class, 'index'])->name('dashboard');
 
         Route::resource('suppliers', SupplierController::class);
+        Route::get('payables', [SupplierPayableController::class, 'index'])->name('payables.index');
+        Route::get('payables/create', [SupplierPayableController::class, 'create'])->name('payables.create');
+        Route::post('payables', [SupplierPayableController::class, 'store'])->name('payables.store');
+        Route::post('payables/{supplier}/pay-full', [SupplierPayableController::class, 'payFull'])->name('payables.pay-full');
+        Route::get('payables/{supplier}', [SupplierPayableController::class, 'show'])->name('payables.show');
+        Route::get('products/export', [ProductController::class, 'export'])->name('products.export');
         Route::get('products/bulk-prices', [ProductController::class, 'bulkPrices'])->name('products.bulk-prices');
         Route::put('products/bulk-prices', [ProductController::class, 'updateBulkPrices'])->name('products.bulk-prices.update');
         Route::resource('products', ProductController::class);
         Route::get('products/{product}/duplicate', [ProductController::class, 'duplicate'])->name('products.duplicate');
 
+        Route::resource('combos', ComboController::class);
+        Route::get('on-demand', [OnDemandSaleController::class, 'index'])->name('on-demand.index');
         Route::get('free-shipping', [FreeShippingController::class, 'index'])->name('free-shipping.index');
         Route::post('free-shipping', [FreeShippingController::class, 'store'])->name('free-shipping.store');
         Route::delete('free-shipping/{product}', [FreeShippingController::class, 'destroy'])->name('free-shipping.destroy');
@@ -56,8 +67,16 @@ Route::middleware('pin.auth')->group(function () {
         Route::get('sales/create', [SaleController::class, 'create'])->name('sales.create');
         Route::get('sales/export-labels', [SaleController::class, 'exportLabels'])->name('sales.export-labels');
         Route::post('sales/export-labels', [SaleController::class, 'exportLabels'])->name('sales.export-labels.selected');
+        Route::post('sales/send-sistrack', [SaleController::class, 'sendManyToSistrack'])->name('sales.send-sistrack');
+        Route::post('sales/sync-sistrack-status', [SaleController::class, 'syncManySistrackStatus'])->name('sales.sync-sistrack-status');
+        Route::get('sales/sync-sistrack-status/pending', [SaleController::class, 'pendingSistrackStatusSync'])->name('sales.sync-sistrack-status.pending');
+        Route::post('sales/mark-delivered', [SaleController::class, 'markManyDelivered'])->name('sales.mark-delivered');
+        Route::post('sales/void-many', [SaleController::class, 'voidMany'])->name('sales.void-many');
         Route::post('sales', [SaleController::class, 'store'])->name('sales.store');
         Route::get('sales/{sale}', [SaleController::class, 'show'])->name('sales.show');
+        Route::post('sales/{sale}/send-sistrack', [SaleController::class, 'sendToSistrack'])->name('sales.send-sistrack.one');
+        Route::post('sales/{sale}/sync-sistrack-status', [SaleController::class, 'syncSistrackStatus'])->name('sales.sync-sistrack-status.one');
+        Route::post('sales/{sale}/mark-delivered', [SaleController::class, 'markDelivered'])->name('sales.mark-delivered.one');
         Route::patch('sales/{sale}/customer', [SaleController::class, 'updateCustomer'])->name('sales.customer.update');
         Route::patch('sales/{sale}/shipping', [SaleController::class, 'updateShipping'])->name('sales.shipping.update');
         Route::post('sales/{sale}/items', [SaleController::class, 'addItem'])->name('sales.items.store');
@@ -69,6 +88,7 @@ Route::middleware('pin.auth')->group(function () {
     Route::prefix('consignments')->name('consignments.')->group(function () {
         Route::get('/', [ConsignmentController::class, 'dashboard'])->name('dashboard');
         Route::get('list', [ConsignmentController::class, 'index'])->name('index');
+        Route::get('monthly-products', [ConsignmentController::class, 'monthlyProducts'])->name('monthly-products');
         Route::get('create', [ConsignmentController::class, 'create'])->name('create');
         Route::post('/', [ConsignmentController::class, 'store'])->name('store');
         Route::get('{consignment}', [ConsignmentController::class, 'show'])->name('show');
@@ -80,6 +100,7 @@ Route::middleware('pin.auth')->group(function () {
     Route::prefix('costs')->name('costs.')->group(function () {
         Route::get('/', [CostDashboardController::class, 'index'])->name('dashboard');
         Route::get('margins', [CostDashboardController::class, 'margins'])->name('margins');
+        Route::get('sellers', [CostDashboardController::class, 'bySeller'])->name('sellers');
         Route::resource('expenses', ExpenseController::class)->except(['show']);
     });
 });

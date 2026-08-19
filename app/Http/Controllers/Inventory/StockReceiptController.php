@@ -54,16 +54,25 @@ class StockReceiptController extends Controller
             ->orderBy('name')
             ->get();
 
-        return view('inventory.stock.create', compact('products'));
+        $pendingOnDemand = $products->mapWithKeys(function (Product $product) {
+            return [(string) $product->id => $this->fifo->pendingOnDemandQuantity($product->id)];
+        })->all();
+
+        return view('inventory.stock.create', compact('products', 'pendingOnDemand'));
     }
 
     public function store(StoreStockReceiptRequest $request): RedirectResponse
     {
         $lot = $this->fifo->receiveStock($request->validated());
+        $covered = (int) ($lot->on_demand_covered ?? 0);
+        $msg = "Entrada de stock registrada (lote {$lot->lot_number}).";
+        if ($covered > 0) {
+            $msg .= " Cubrió {$covered} unidad(es) on demand.";
+        }
 
         return redirect()
             ->route('inventory.stock.index')
-            ->with('success', "Entrada de stock registrada (lote {$lot->lot_number}).");
+            ->with('success', $msg);
     }
 
     public function edit(InventoryLot $lot): View

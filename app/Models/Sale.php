@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -13,7 +14,55 @@ class Sale extends Model
 
     public const STATUS_CONFIRMED = 'confirmed';
 
+    public const STATUS_IN_TRANSIT = 'in_transit';
+
+    public const STATUS_DELIVERED = 'delivered';
+
+    public const STATUS_RETURNED = 'returned';
+
     public const STATUS_VOIDED = 'voided';
+
+    public const SISTRACK_PENDING = 'pending';
+
+    public const SISTRACK_SENT = 'sent';
+
+    public const SISTRACK_FAILED = 'failed';
+
+    /** Estados que cuentan para ingresos / márgenes. */
+    public const REVENUE_STATUSES = [
+        self::STATUS_CONFIRMED,
+        self::STATUS_IN_TRANSIT,
+        self::STATUS_DELIVERED,
+    ];
+
+    /** Estados visibles en on-demand (excluye anuladas). */
+    public const ON_DEMAND_STATUSES = [
+        self::STATUS_CONFIRMED,
+        self::STATUS_IN_TRANSIT,
+        self::STATUS_DELIVERED,
+        self::STATUS_RETURNED,
+    ];
+
+    public const STATUS_LABELS = [
+        self::STATUS_CONFIRMED => 'Confirmada',
+        self::STATUS_IN_TRANSIT => 'En ruta',
+        self::STATUS_DELIVERED => 'Entregada',
+        self::STATUS_RETURNED => 'Devolución',
+        self::STATUS_VOIDED => 'Anulada',
+    ];
+
+    /**
+     * Rank for non-degrading sync: higher wins.
+     *
+     * @var array<string, int>
+     */
+    public const STATUS_RANK = [
+        self::STATUS_CONFIRMED => 1,
+        self::STATUS_IN_TRANSIT => 2,
+        self::STATUS_DELIVERED => 3,
+        self::STATUS_RETURNED => 3,
+        self::STATUS_VOIDED => 99,
+    ];
 
     protected $fillable = [
         'number',
@@ -21,6 +70,7 @@ class Sale extends Model
         'seller_id',
         'sold_at',
         'status',
+        'status_changed_at',
         'subtotal_without_vat',
         'discount_percent',
         'discount_amount',
@@ -37,6 +87,14 @@ class Sale extends Model
         'gross_margin',
         'payment_method',
         'notes',
+        'sistrack_status',
+        'sistrack_external_id',
+        'sistrack_order_id',
+        'sistrack_recipient_id',
+        'sistrack_last_attempt_at',
+        'sistrack_last_error',
+        'sistrack_shipping_status',
+        'sistrack_status_synced_at',
         'voided_at',
     ];
 
@@ -45,6 +103,9 @@ class Sale extends Model
         return [
             'sold_at' => 'datetime',
             'voided_at' => 'datetime',
+            'status_changed_at' => 'datetime',
+            'sistrack_last_attempt_at' => 'datetime',
+            'sistrack_status_synced_at' => 'datetime',
             'subtotal_without_vat' => 'decimal:2',
             'discount_percent' => 'decimal:2',
             'discount_amount' => 'decimal:2',
@@ -81,6 +142,53 @@ class Sale extends Model
         return $this->hasMany(SaleItem::class);
     }
 
+    public function scopeRevenue(Builder $query): Builder
+    {
+        return $query->whereIn('status', self::REVENUE_STATUSES);
+    }
+
+    public function scopeOnDemandVisible(Builder $query): Builder
+    {
+        return $query->whereIn('status', self::ON_DEMAND_STATUSES);
+    }
+
+    public function scopeStuckInTransit(Builder $query, int $days = 7): Builder
+    {
+        $cutoff = now()->subDays($days);
+
+        return $query
+            ->where('status', self::STATUS_IN_TRANSIT)
+            ->where(function (Builder $inner) use ($cutoff) {
+                $inner->where(function (Builder $q) use ($cutoff) {
+                    $q->whereNotNull('status_changed_at')
+                        ->where('status_changed_at', '<=', $cutoff);
+                })->orWhere(function (Builder $q) use ($cutoff) {
+                    $q->whereNull('status_changed_at')
+                        ->whereNotNull('sistrack_status_synced_at')
+                        ->where('sistrack_status_synced_at', '<=', $cutoff);
+                })->orWhere(function (Builder $q) use ($cutoff) {
+                    $q->whereNull('status_changed_at')
+                        ->whereNull('sistrack_status_synced_at')
+                        ->where('sold_at', '<=', $cutoff);
+                });
+            });
+    }
+
+    /**
+     * Enviadas a Sistrack y aún sin estado final (pendientes de sync).
+     */
+    public function scopePendingSistrackStatusSync(Builder $query): Builder
+    {
+        return $query
+            ->where('sistrack_status', self::SISTRACK_SENT)
+            ->whereNotNull('sistrack_external_id')
+            ->where('status', '!=', self::STATUS_VOIDED)
+            ->whereNotIn('status', [
+                self::STATUS_DELIVERED,
+                self::STATUS_RETURNED,
+            ]);
+    }
+
     public function isVoided(): bool
     {
         return $this->status === self::STATUS_VOIDED;
@@ -89,6 +197,137 @@ class Sale extends Model
     public function isConfirmed(): bool
     {
         return $this->status === self::STATUS_CONFIRMED;
+    }
+
+    public function isInTransit(): bool
+    {
+        return $this->status === self::STATUS_IN_TRANSIT;
+    }
+
+    public function isDelivered(): bool
+    {
+        return $this->status === self::STATUS_DELIVERED;
+    }
+
+    public function isReturned(): bool
+    {
+        return $this->status === self::STATUS_RETURNED;
+    }
+
+    public function isOpenForRevenue(): bool
+    {
+        return in_array($this->status, self::REVENUE_STATUSES, true);
+    }
+
+    public function isFinalShippingStatus(): bool
+    {
+        return in_array($this->status, [
+            self::STATUS_DELIVERED,
+            self::STATUS_RETURNED,
+            self::STATUS_VOIDED,
+        ], true);
+    }
+
+    public function canSyncSistrackStatus(): bool
+    {
+        return $this->isSistrackSent()
+            && filled($this->sistrack_external_id)
+            && ! $this->isVoided();
+    }
+
+    public function statusLabel(): string
+    {
+        return self::STATUS_LABELS[$this->status] ?? (string) $this->status;
+    }
+
+    public function statusBadgeClass(): string
+    {
+        return match ($this->status) {
+            self::STATUS_CONFIRMED, self::STATUS_DELIVERED => 'badge-ok',
+            self::STATUS_IN_TRANSIT => 'badge-warn',
+            self::STATUS_RETURNED, self::STATUS_VOIDED => 'badge-off',
+            default => 'badge-warn',
+        };
+    }
+
+    public function inTransitSince(): ?\Carbon\CarbonInterface
+    {
+        if (! $this->isInTransit()) {
+            return null;
+        }
+
+        return $this->status_changed_at
+            ?? $this->sistrack_status_synced_at
+            ?? $this->sold_at;
+    }
+
+    public function isStuckInTransit(int $days = 7): bool
+    {
+        if (! $this->isInTransit()) {
+            return false;
+        }
+
+        $since = $this->inTransitSince();
+
+        return $since !== null && $since->lte(now()->subDays($days));
+    }
+
+    /**
+     * Whether applying $newStatus would be a non-degrading progression.
+     */
+    public function canProgressToStatus(string $newStatus): bool
+    {
+        if ($this->isVoided()) {
+            return false;
+        }
+
+        $currentRank = self::STATUS_RANK[$this->status] ?? 0;
+        $newRank = self::STATUS_RANK[$newStatus] ?? 0;
+
+        if ($newRank <= 0) {
+            return false;
+        }
+
+        // Same terminal family (delivered <-> returned) may switch either way.
+        if ($currentRank === 3 && $newRank === 3 && $this->status !== $newStatus) {
+            return true;
+        }
+
+        return $newRank > $currentRank;
+    }
+
+    public function isSistrackSent(): bool
+    {
+        return $this->sistrack_status === self::SISTRACK_SENT;
+    }
+
+    public function canSendToSistrack(): bool
+    {
+        $this->loadMissing('shippingCarrier');
+
+        return $this->isConfirmed()
+            && $this->has_shipping
+            && ! $this->isSistrackSent()
+            && (bool) $this->shippingCarrier?->supportsSistrack();
+    }
+
+    public function sistrackStatusLabel(): string
+    {
+        if (! $this->has_shipping) {
+            return '—';
+        }
+
+        $this->loadMissing('shippingCarrier');
+        if (! $this->shippingCarrier?->sistrack_enabled && ! $this->isSistrackSent()) {
+            return 'Sin Sistrack';
+        }
+
+        return match ($this->sistrack_status) {
+            self::SISTRACK_SENT => 'Enviado a Sistrack',
+            self::SISTRACK_FAILED => 'Falló envío Sistrack',
+            self::SISTRACK_PENDING => 'Pendiente Sistrack',
+            default => 'Sin enviar a Sistrack',
+        };
     }
 
     /** Productos c/IVA (sin incluir envío cobrado al cliente). */

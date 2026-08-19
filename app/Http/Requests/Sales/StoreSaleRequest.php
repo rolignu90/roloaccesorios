@@ -71,21 +71,24 @@ class StoreSaleRequest extends FormRequest
             'discount_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
             'discount_amount' => ['nullable', 'numeric', 'min:0'],
             'notes' => ['nullable', 'string'],
-            'items' => ['required', 'array', 'min:1'],
-            'items.*.product_id' => ['required', 'distinct', 'exists:products,id'],
+            'items' => ['nullable', 'array'],
+            'items.*.product_id' => ['required', 'exists:products,id'],
             'items.*.quantity' => ['required', 'integer', 'min:1'],
             'items.*.unit_price_with_vat' => ['required', 'numeric', 'min:0'],
             'items.*.unit_price_without_vat' => ['required', 'numeric', 'min:0'],
             'items.*.discount_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
             'items.*.discount_amount' => ['nullable', 'numeric', 'min:0'],
+            'items.*.combo_id' => ['nullable', 'exists:combos,id'],
+            'combos' => ['nullable', 'array'],
+            'combos.*.combo_id' => ['required', 'exists:combos,id'],
+            'combos.*.quantity' => ['required', 'integer', 'min:1'],
         ];
     }
 
     public function messages(): array
     {
         return [
-            'items.required' => 'Agrega al menos un producto a la venta.',
-            'items.*.product_id.distinct' => 'No repitas el mismo producto; suma cantidades en una sola línea.',
+            'items.*.product_id.required' => 'Cada línea debe tener un producto.',
             'customer_id.required' => 'Selecciona un cliente existente.',
             'seller_id.required' => 'Selecciona el vendedor.',
             'shipping_carrier_id.required' => 'Selecciona la empresa de envío.',
@@ -98,6 +101,15 @@ class StoreSaleRequest extends FormRequest
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator) {
+            $hasItems = collect($this->input('items', []))
+                ->contains(fn ($row) => filled($row['product_id'] ?? null) && (int) ($row['quantity'] ?? 0) > 0);
+            $hasCombos = collect($this->input('combos', []))
+                ->contains(fn ($row) => filled($row['combo_id'] ?? null) && (int) ($row['quantity'] ?? 0) > 0);
+
+            if (! $hasItems && ! $hasCombos) {
+                $validator->errors()->add('items', 'Agrega al menos un producto o un combo a la venta.');
+            }
+
             if ($this->input('customer_mode') !== 'new') {
                 return;
             }
@@ -127,9 +139,19 @@ class StoreSaleRequest extends FormRequest
                     'unit_price_without_vat' => price_without_vat($withVat ?? 0),
                     'discount_percent' => $row['discount_percent'] ?? 0,
                     'discount_amount' => $row['discount_amount'] ?? 0,
+                    'combo_id' => $row['combo_id'] ?? null,
                 ];
             })
             ->filter(fn (array $row) => filled($row['product_id']))
+            ->values()
+            ->all();
+
+        $combos = collect($this->input('combos', []))
+            ->filter(fn ($row) => filled($row['combo_id'] ?? null) && (int) ($row['quantity'] ?? 0) > 0)
+            ->map(fn ($row) => [
+                'combo_id' => (int) $row['combo_id'],
+                'quantity' => (int) $row['quantity'],
+            ])
             ->values()
             ->all();
 
@@ -159,6 +181,7 @@ class StoreSaleRequest extends FormRequest
         $this->merge([
             'customer_mode' => $this->input('customer_mode', 'new'),
             'items' => $items,
+            'combos' => $combos,
             'has_shipping' => $this->boolean('has_shipping'),
             'shipping_amount' => $this->boolean('has_shipping')
                 ? $this->input('shipping_amount', config('sales.default_shipping_amount', 3))

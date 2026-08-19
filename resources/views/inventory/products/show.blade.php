@@ -10,6 +10,9 @@
             @if ($product->free_shipping)
                 · <span class="badge badge-ok">Envío gratis</span>
             @endif
+            @if ($product->on_demand)
+                · <span class="badge badge-warn">On demand</span>
+            @endif
         </p>
     </div>
     <div class="actions">
@@ -79,6 +82,7 @@
         <p><strong>Unidad:</strong> {{ $product->unit }}</p>
         <p><strong>Estado:</strong> {{ $product->is_active ? 'Activo' : 'Inactivo' }}</p>
         <p><strong>Envío:</strong> {{ $product->free_shipping ? 'Gratis' : 'Normal' }}</p>
+        <p><strong>On demand:</strong> {{ $product->on_demand ? 'Sí — se puede facturar sin stock' : 'No' }}</p>
         <p><strong>Descripción:</strong> {{ $product->description ?: '—' }}</p>
         <p class="muted">
             Un solo precio de venta. Los precios de compra dependen del proveedor y del lote FIFO.

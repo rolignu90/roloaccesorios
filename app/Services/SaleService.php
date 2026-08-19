@@ -2,12 +2,14 @@
 
 namespace App\Services;
 
+use App\Models\Combo;
 use App\Models\Product;
 use App\Models\Sale;
 use App\Models\SaleItem;
 use App\Models\SaleLotAllocation;
 use App\Models\Seller;
 use App\Models\ShippingCarrier;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use RuntimeException;
@@ -20,12 +22,10 @@ class SaleService
 
     public function create(array $data): Sale
     {
-        $items = collect($data['items'] ?? [])
-            ->filter(fn (array $item) => ! empty($item['product_id']) && (int) ($item['quantity'] ?? 0) > 0)
-            ->values();
+        $items = $this->normalizeSaleItems($data);
 
         if ($items->isEmpty()) {
-            throw new InvalidArgumentException('La venta debe tener al menos un producto.');
+            throw new InvalidArgumentException('La venta debe tener al menos un producto o combo.');
         }
 
         return DB::transaction(function () use ($data, $items) {
@@ -58,6 +58,7 @@ class SaleService
                     'discount_amount' => $lineDiscountAmountWithVat,
                     'line_subtotal' => $lineSubtotal,
                     'line_net_with_vat' => $netWithVat,
+                    'combo_id' => $item['combo_id'] ?? null,
                 ];
 
                 $subtotal += $lineSubtotal;
@@ -84,8 +85,22 @@ class SaleService
                     $shippingAmount = 0;
                 }
 
-                $hasFreeShippingProduct = collect($computedItems)
-                    ->contains(fn (array $computed) => (bool) $computed['product']->free_shipping);
+                $comboIds = collect($computedItems)
+                    ->pluck('combo_id')
+                    ->filter()
+                    ->unique()
+                    ->values();
+                $freeShippingComboIds = $comboIds->isEmpty()
+                    ? collect()
+                    : Combo::query()
+                        ->whereIn('id', $comboIds)
+                        ->where('free_shipping', true)
+                        ->pluck('id');
+
+                $hasFreeShippingProduct = collect($computedItems)->contains(
+                    fn (array $computed) => (bool) $computed['product']->free_shipping
+                        || ($computed['combo_id'] && $freeShippingComboIds->contains($computed['combo_id']))
+                );
 
                 if ($hasFreeShippingProduct) {
                     $shippingAmount = 0.0;
@@ -118,6 +133,7 @@ class SaleService
                 'seller_id' => $seller->id,
                 'sold_at' => $data['sold_at'] ?? now(),
                 'status' => Sale::STATUS_CONFIRMED,
+                'status_changed_at' => now(),
                 'subtotal_without_vat' => $subtotal,
                 'discount_percent' => $globalDiscountPercent,
                 'discount_amount' => $globalDiscountAmountWithVat,
@@ -149,12 +165,14 @@ class SaleService
                     'id' => $sale->id,
                     'occurred_at' => $sale->sold_at,
                     'notes' => 'Salida por venta '.$sale->number,
+                    'allow_on_demand' => true,
                 ]);
                 $itemCogs = 0.0;
 
                 $saleItem = SaleItem::query()->create([
                     'sale_id' => $sale->id,
                     'product_id' => $computed['product']->id,
+                    'combo_id' => $computed['combo_id'] ?? null,
                     'quantity' => $computed['quantity'],
                     'unit_price_without_vat' => $computed['unit_price_without_vat'],
                     'discount_percent' => $computed['discount_percent'],
@@ -188,7 +206,7 @@ class SaleService
                 'gross_margin' => round($taxableBase - $saleCogs, 2),
             ]);
 
-            return $sale->fresh(['customer', 'seller', 'items.product', 'items.lotAllocations.inventoryLot']);
+            return $sale->fresh(['customer', 'seller', 'items.product', 'items.combo', 'items.lotAllocations.inventoryLot']);
         });
     }
 
@@ -204,6 +222,9 @@ class SaleService
             $restore = [];
             foreach ($sale->items as $item) {
                 foreach ($item->lotAllocations as $allocation) {
+                    if ($allocation->inventory_lot_id === null) {
+                        continue;
+                    }
                     $restore[] = [
                         'lot_id' => $allocation->inventory_lot_id,
                         'quantity' => $allocation->quantity,
@@ -221,10 +242,29 @@ class SaleService
             $sale->update([
                 'status' => Sale::STATUS_VOIDED,
                 'voided_at' => now(),
+                'status_changed_at' => now(),
             ]);
 
             return $sale->fresh(['customer', 'seller', 'items.product', 'items.lotAllocations.inventoryLot']);
         });
+    }
+
+    public function markDelivered(Sale $sale): Sale
+    {
+        if ($sale->isVoided()) {
+            throw new RuntimeException('No se puede marcar entregada una venta anulada.');
+        }
+
+        if ($sale->isDelivered()) {
+            return $sale;
+        }
+
+        $sale->forceFill([
+            'status' => Sale::STATUS_DELIVERED,
+            'status_changed_at' => now(),
+        ])->save();
+
+        return $sale->fresh();
     }
 
     public function addItem(Sale $sale, array $data): Sale
@@ -246,6 +286,7 @@ class SaleService
                 'id' => $sale->id,
                 'occurred_at' => now(),
                 'notes' => 'Ajuste venta '.$sale->number.' (agregar ítem)',
+                'allow_on_demand' => true,
             ]);
 
             $itemCogs = 0.0;
@@ -311,6 +352,7 @@ class SaleService
                     'id' => $sale->id,
                     'occurred_at' => now(),
                     'notes' => 'Ajuste venta '.$sale->number.' (subir cantidad)',
+                    'allow_on_demand' => true,
                 ]);
 
                 $itemCogs = (float) $item->cogs_total;
@@ -411,7 +453,7 @@ class SaleService
         return DB::transaction(function () use ($sale, $overrides) {
             $sale = Sale::query()
                 ->lockForUpdate()
-                ->with(['items.product', 'items.lotAllocations', 'shippingCarrier'])
+                ->with(['items.product', 'items.combo', 'items.lotAllocations', 'shippingCarrier'])
                 ->findOrFail($sale->id);
 
             if ($sale->items->isEmpty()) {
@@ -467,6 +509,7 @@ class SaleService
 
                 $hasFreeShippingProduct = $sale->items->contains(
                     fn (SaleItem $item) => (bool) $item->product?->free_shipping
+                        || (bool) $item->combo?->free_shipping
                 );
 
                 if ($hasFreeShippingProduct) {
@@ -547,10 +590,13 @@ class SaleService
 
             $available = (int) $allocation->quantity;
             $take = min($available, $remaining);
-            $restore[] = [
-                'lot_id' => $allocation->inventory_lot_id,
-                'quantity' => $take,
-            ];
+
+            if ($allocation->inventory_lot_id !== null) {
+                $restore[] = [
+                    'lot_id' => $allocation->inventory_lot_id,
+                    'quantity' => $take,
+                ];
+            }
 
             if ($take === $available) {
                 $allocation->delete();
@@ -591,6 +637,60 @@ class SaleService
         if ((int) $item->sale_id !== (int) $sale->id) {
             throw new InvalidArgumentException('El ítem no pertenece a esta venta.');
         }
+    }
+
+    /**
+     * Merge regular product lines with expanded combo lines.
+     *
+     * @return Collection<int, array{product_id: int, quantity: int, unit_price_with_vat: float, unit_price_without_vat: float, discount_percent: float, discount_amount: float, combo_id: ?int}>
+     */
+    private function normalizeSaleItems(array $data): Collection
+    {
+        $lines = collect($data['items'] ?? [])
+            ->filter(fn (array $item) => ! empty($item['product_id']) && (int) ($item['quantity'] ?? 0) > 0)
+            ->map(function (array $item) {
+                $unitWithVat = isset($item['unit_price_with_vat'])
+                    ? round((float) $item['unit_price_with_vat'], 2)
+                    : null;
+
+                return [
+                    'product_id' => (int) $item['product_id'],
+                    'quantity' => (int) $item['quantity'],
+                    'unit_price_with_vat' => $unitWithVat,
+                    'unit_price_without_vat' => isset($item['unit_price_without_vat'])
+                        ? (float) $item['unit_price_without_vat']
+                        : ($unitWithVat !== null ? price_without_vat($unitWithVat) : null),
+                    'discount_percent' => (float) ($item['discount_percent'] ?? 0),
+                    'discount_amount' => (float) ($item['discount_amount'] ?? 0),
+                    'combo_id' => ! empty($item['combo_id']) ? (int) $item['combo_id'] : null,
+                ];
+            })
+            ->values();
+
+        $comboRows = collect($data['combos'] ?? [])
+            ->filter(fn (array $row) => ! empty($row['combo_id']) && (int) ($row['quantity'] ?? 0) > 0)
+            ->values();
+
+        foreach ($comboRows as $row) {
+            $combo = Combo::query()
+                ->where('is_active', true)
+                ->with('items.product')
+                ->findOrFail((int) $row['combo_id']);
+
+            foreach ($combo->expandToSaleLines((int) $row['quantity']) as $expanded) {
+                $lines->push([
+                    'product_id' => $expanded['product']->id,
+                    'quantity' => $expanded['quantity'],
+                    'unit_price_with_vat' => $expanded['unit_price_with_vat'],
+                    'unit_price_without_vat' => $expanded['unit_price_without_vat'],
+                    'discount_percent' => 0.0,
+                    'discount_amount' => 0.0,
+                    'combo_id' => $expanded['combo_id'],
+                ]);
+            }
+        }
+
+        return $lines->values();
     }
 
     public function nextNumber(?Seller $seller = null): string

@@ -143,4 +143,95 @@ class ConsignmentDashboardService
                 return $c;
             });
     }
+
+    /**
+     * Cantidad entregada por mes × consignatario × producto (excluye anuladas).
+     *
+     * @return Collection<int, object{
+     *     month_key: string,
+     *     party_type: string,
+     *     party_name: string,
+     *     product_code: string,
+     *     product_name: string,
+     *     quantity: int|float
+     * }>
+     */
+    public function monthlyDeliveredQuantities(
+        ?Carbon $from = null,
+        ?Carbon $to = null,
+        ?string $partyType = null,
+        ?string $search = null,
+    ): Collection {
+        $from = ($from ?? now()->startOfMonth())->copy()->startOfDay();
+        $to = ($to ?? now()->endOfDay())->copy()->endOfDay();
+
+        $query = DB::table('consignment_items')
+            ->join('consignments', 'consignments.id', '=', 'consignment_items.consignment_id')
+            ->join('products', 'products.id', '=', 'consignment_items.product_id')
+            ->leftJoin('customers', 'customers.id', '=', 'consignments.customer_id')
+            ->leftJoin('sellers', 'sellers.id', '=', 'consignments.seller_id')
+            ->where('consignments.status', '!=', Consignment::STATUS_VOIDED)
+            ->whereBetween('consignments.delivered_at', [$from, $to])
+            ->when(
+                $partyType === Consignment::PARTY_CUSTOMER || $partyType === Consignment::PARTY_SELLER,
+                fn ($q) => $q->where('consignments.party_type', $partyType)
+            )
+            ->when(filled($search), function ($q) use ($search) {
+                $term = '%'.$search.'%';
+                $q->where(function ($inner) use ($term) {
+                    $inner->where('products.name', 'like', $term)
+                        ->orWhere('products.code', 'like', $term)
+                        ->orWhere('customers.name', 'like', $term)
+                        ->orWhere('sellers.name', 'like', $term);
+                });
+            })
+            ->groupBy(
+                DB::raw("DATE_FORMAT(consignments.delivered_at, '%Y-%m')"),
+                'consignments.party_type',
+                DB::raw("CASE
+                    WHEN consignments.party_type = 'seller' THEN COALESCE(sellers.name, 'Sin vendedor')
+                    ELSE COALESCE(customers.name, 'Sin cliente')
+                END"),
+                'products.id',
+                'products.code',
+                'products.name',
+            )
+            ->select([
+                DB::raw("DATE_FORMAT(consignments.delivered_at, '%Y-%m') as month_key"),
+                'consignments.party_type',
+                DB::raw("CASE
+                    WHEN consignments.party_type = 'seller' THEN COALESCE(sellers.name, 'Sin vendedor')
+                    ELSE COALESCE(customers.name, 'Sin cliente')
+                END as party_name"),
+                'products.code as product_code',
+                'products.name as product_name',
+            ])
+            ->selectRaw('SUM(consignment_items.quantity) as quantity')
+            ->selectRaw('SUM(consignment_items.line_total_with_vat) as total_with_vat')
+            ->orderByDesc('month_key')
+            ->orderBy('party_name')
+            ->orderBy('products.name');
+
+        return $query->get()->map(function ($row) {
+            $row->quantity = (int) $row->quantity;
+            $row->total_with_vat = round((float) $row->total_with_vat, 2);
+            $row->unit_price_with_vat = $row->quantity > 0
+                ? round($row->total_with_vat / $row->quantity, 2)
+                : 0.0;
+            $row->month_label = $this->formatMonthLabel((string) $row->month_key);
+
+            return $row;
+        });
+    }
+
+    private function formatMonthLabel(string $monthKey): string
+    {
+        try {
+            return Carbon::createFromFormat('Y-m', $monthKey)
+                ->locale('es')
+                ->translatedFormat('F Y');
+        } catch (\Throwable) {
+            return $monthKey;
+        }
+    }
 }

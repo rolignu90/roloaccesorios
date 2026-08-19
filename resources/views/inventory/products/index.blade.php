@@ -15,6 +15,7 @@
         <p class="muted">Árbol con proveedores · precios c/IVA · alertas de stock</p>
     </div>
     <div class="actions">
+        <a class="btn btn-secondary" href="{{ route('inventory.products.export', request()->only(['q', 'show_inactive'])) }}">Exportar precios</a>
         <a class="btn btn-secondary" href="{{ route('inventory.products.bulk-prices') }}">Precios masivos</a>
         <a class="btn btn-secondary" href="{{ route('inventory.stock.create') }}">Entrada de stock</a>
         <a class="btn" href="{{ route('inventory.products.create') }}">Nuevo producto</a>
@@ -70,13 +71,20 @@
                         @if ($product->free_shipping)
                             <span class="badge badge-ok">Envío gratis</span>
                         @endif
+                        @if ($product->on_demand)
+                            <span class="badge badge-warn">On demand</span>
+                        @endif
                         @if ($avgPurchase !== null)
                             <span class="badge {{ $hasVaryingPrices ? 'badge-warn' : '' }}">
                                 {{ $hasVaryingPrices ? 'Prom. compra' : 'Compra' }} {{ money($avgPurchase) }}
                             </span>
                         @endif
-                        <span class="badge {{ $lowStock ? 'badge-warn' : 'badge-ok' }}">
-                            Stock {{ $stock }} {{ $product->unit }}
+                        <span class="badge {{ $product->on_demand ? '' : ($lowStock ? 'badge-warn' : 'badge-ok') }}">
+                            @if ($product->on_demand)
+                                Stock opcional {{ $stock }}
+                            @else
+                                Stock {{ $stock }} {{ $product->unit }}
+                            @endif
                         </span>
                         <span class="badge">Mín. {{ $product->min_stock }}</span>
                         @if ($lowStock)

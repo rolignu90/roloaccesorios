@@ -26,6 +26,7 @@
                 <th>Código</th>
                 <th>Costo envío</th>
                 <th>Comisión COD</th>
+                <th>Sistrack</th>
                 <th>Estado</th>
                 <th></th>
             </tr>
@@ -44,6 +45,11 @@
                         @endif
                     </td>
                     <td>
+                        <span class="badge {{ $carrier->supportsSistrack() ? 'badge-ok' : 'badge-off' }}">
+                            {{ $carrier->sistrack_enabled ? ($carrier->supportsSistrack() ? 'Sí' : 'Incompleto') : 'No' }}
+                        </span>
+                    </td>
+                    <td>
                         <span class="badge {{ $carrier->is_active ? 'badge-ok' : 'badge-off' }}">
                             {{ $carrier->is_active ? 'Activa' : 'Inactiva' }}
                         </span>
@@ -53,7 +59,7 @@
                     </td>
                 </tr>
             @empty
-                <tr><td colspan="6" class="muted">Aún no hay empresas de envío.</td></tr>
+                <tr><td colspan="7" class="muted">Aún no hay empresas de envío.</td></tr>
             @endforelse
         </tbody>
     </table>

@@ -103,6 +103,7 @@ class ConsignmentService
                     'occurred_at' => $consignment->delivered_at,
                     'movement_type' => InventoryMovement::TYPE_CONSIGNACION,
                     'notes' => 'Salida por consignación '.$consignment->number,
+                    'allow_on_demand' => true,
                 ]);
 
                 $itemCogs = 0.0;
@@ -233,10 +234,12 @@ class ConsignmentService
                     $allocation->quantity_returned += $take;
                     $allocation->save();
 
-                    $restorePayload[] = [
-                        'lot_id' => $allocation->inventory_lot_id,
-                        'quantity' => $take,
-                    ];
+                    if ($allocation->inventory_lot_id !== null) {
+                        $restorePayload[] = [
+                            'lot_id' => $allocation->inventory_lot_id,
+                            'quantity' => $take,
+                        ];
+                    }
                     $remainingToReturn -= $take;
                 }
 
@@ -289,10 +292,12 @@ class ConsignmentService
                     if ($outstanding <= 0) {
                         continue;
                     }
-                    $restorePayload[] = [
-                        'lot_id' => $allocation->inventory_lot_id,
-                        'quantity' => $outstanding,
-                    ];
+                    if ($allocation->inventory_lot_id !== null) {
+                        $restorePayload[] = [
+                            'lot_id' => $allocation->inventory_lot_id,
+                            'quantity' => $outstanding,
+                        ];
+                    }
                     $allocation->quantity_returned = (int) $allocation->quantity;
                     $allocation->save();
                 }

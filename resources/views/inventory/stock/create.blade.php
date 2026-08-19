@@ -14,18 +14,22 @@
             ])->values(),
         ];
     });
+    $pendingOnDemand = $pendingOnDemand ?? [];
 @endphp
 
 <div class="topbar">
     <div>
         <h1>Entrada de stock (FIFO)</h1>
-        <p class="muted">Elige producto y proveedor; el precio de compra se precarga según el proveedor (USD).</p>
+        <p class="muted">Elige producto y proveedor; el precio de compra se precarga según el proveedor (USD). Si hay on demand pendiente, esta entrada lo cubre primero.</p>
     </div>
     <div class="actions">
         <a class="btn btn-secondary" href="{{ route('inventory.stock.index') }}">Ver entradas</a>
+        <a class="btn btn-secondary" href="{{ route('inventory.on-demand.index') }}">On demand</a>
         <a class="btn btn-secondary" href="{{ route('inventory.products.index') }}">Productos</a>
     </div>
 </div>
+
+<div id="on-demand-hint" class="flash" style="background:#eff6ff;color:#1e40af;border-color:#bfdbfe;margin-bottom:1rem;display:none"></div>
 
 <div class="card">
     <form method="POST" action="{{ route('inventory.stock.store') }}">
@@ -38,6 +42,9 @@
                     @foreach ($products as $product)
                         <option value="{{ $product->id }}" @selected(old('product_id', request('product_id')) == $product->id)>
                             {{ $product->code }} — {{ $product->name }}
+                            @if (($pendingOnDemand[(string) $product->id] ?? 0) > 0)
+                                · {{ $pendingOnDemand[(string) $product->id] }} on demand
+                            @endif
                         </option>
                     @endforeach
                 </select>
@@ -84,10 +91,28 @@
 <script>
 (() => {
     const productSuppliers = @json($productMap);
+    const pendingOnDemand = @json($pendingOnDemand);
     const productSelect = document.getElementById('product_id');
     const supplierSelect = document.getElementById('supplier_id');
     const purchasePrice = document.getElementById('purchase_price');
+    const quantityInput = document.getElementById('quantity');
+    const hint = document.getElementById('on-demand-hint');
     const oldSupplier = @json(old('supplier_id'));
+
+    const updateHint = () => {
+        const pending = Number(pendingOnDemand[String(productSelect.value)] || 0);
+        const qty = Number(quantityInput?.value || 0);
+        if (!hint) return;
+        if (pending <= 0 || !productSelect.value) {
+            hint.style.display = 'none';
+            return;
+        }
+        const cover = qty > 0 ? Math.min(pending, qty) : pending;
+        hint.style.display = '';
+        hint.textContent = qty > 0
+            ? `Esta entrada cubrirá ${cover} de ${pending} unidad(es) on demand pendientes. El resto (${Math.max(0, qty - cover)}) queda en stock.`
+            : `Hay ${pending} unidad(es) on demand pendientes. Esta entrada las cubrirá primero (COGS real) y el sobrante queda en stock.`;
+    };
 
     const fillSuppliers = () => {
         const productId = productSelect.value;
@@ -99,12 +124,14 @@
         if (!productId) {
             supplierSelect.innerHTML = '<option value="">— Selecciona producto primero —</option>';
             window.initSearchableSelects?.(supplierSelect);
+            updateHint();
             return;
         }
 
         if (!rows.length) {
             supplierSelect.innerHTML = '<option value="">Este producto no tiene proveedores</option>';
             window.initSearchableSelects?.(supplierSelect);
+            updateHint();
             return;
         }
 
@@ -122,6 +149,7 @@
 
         window.initSearchableSelects?.(supplierSelect);
         applyPrice();
+        updateHint();
     };
 
     const applyPrice = () => {
@@ -143,6 +171,7 @@
         purchasePrice.dataset.touched = '';
         applyPrice();
     });
+    quantityInput?.addEventListener('input', updateHint);
 
     fillSuppliers();
 })();
