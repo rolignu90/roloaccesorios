@@ -9,6 +9,7 @@ use App\Http\Requests\Sales\UpdateCustomerRequest;
 use App\Models\Customer;
 use App\Models\CustomerProductPriceTier;
 use App\Models\Product;
+use App\Models\Sale;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -18,20 +19,32 @@ class CustomerController extends Controller
 {
     public function index(Request $request): View
     {
+        $onlyReturns = $request->boolean('returns');
+
         $customers = Customer::query()
+            ->withCount([
+                'sales as returns_count' => fn ($q) => $q->where('status', Sale::STATUS_RETURNED),
+            ])
+            ->withMax([
+                'sales as last_return_at' => fn ($q) => $q->where('status', Sale::STATUS_RETURNED),
+            ], 'sold_at')
+            ->when($onlyReturns, fn ($q) => $q->withReturns())
             ->when($request->filled('q'), function ($query) use ($request) {
                 $term = $request->string('q')->toString();
                 $query->where(function ($inner) use ($term) {
                     $inner->where('code', 'like', "%{$term}%")
                         ->orWhere('name', 'like', "%{$term}%")
-                        ->orWhere('document_number', 'like', "%{$term}%");
+                        ->orWhere('document_number', 'like', "%{$term}%")
+                        ->orWhere('phone', 'like', "%{$term}%");
                 });
             })
             ->orderBy('name')
             ->paginate(15)
             ->withQueryString();
 
-        return view('sales.customers.index', compact('customers'));
+        $returnsCustomersCount = Customer::query()->withReturns()->count();
+
+        return view('sales.customers.index', compact('customers', 'onlyReturns', 'returnsCustomersCount'));
     }
 
     public function create(): View
@@ -55,6 +68,7 @@ class CustomerController extends Controller
     {
         $customer->load([
             'sales' => fn ($q) => $q->latest('sold_at')->limit(20),
+            'returnedSales' => fn ($q) => $q->latest('sold_at')->limit(20),
             'productPriceTiers.product',
         ]);
 

@@ -11,7 +11,7 @@
     <form method="POST" action="{{ route('sales.sellers.update', $seller) }}">
         @csrf
         @method('PUT')
-        @include('sales.sellers._form', ['seller' => $seller, 'codeReadonly' => true])
+        @include('sales.sellers._form', ['seller' => $seller, 'codeReadonly' => true, 'customers' => $customers ?? collect()])
         <button class="btn" type="submit">Actualizar</button>
     </form>
     <form method="POST" action="{{ route('sales.sellers.destroy', $seller) }}" style="margin-top:1rem" onsubmit="return confirm('Si tiene ventas se desactivará. ¿Continuar?')">

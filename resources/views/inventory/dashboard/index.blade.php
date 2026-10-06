@@ -27,6 +27,7 @@
 @endif
 
 <div class="meta" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
+@can('inventory.costs')
     <div class="card">
         Valor inventario (costo)
         <strong>{{ money($inventory_value) }}</strong>
@@ -37,6 +38,7 @@
         <strong>{{ money($retail_value) }}</strong>
         <span class="muted">margen potencial {{ money($potentialMargin) }}</span>
     </div>
+@endcan
     <div class="card">
         Unidades en stock
         <strong>{{ number_format($units_on_hand) }}</strong>
@@ -67,6 +69,7 @@
     </div>
 </div>
 
+@can('inventory.costs')
 <div class="card" style="margin-bottom:1rem">
     <h2 style="margin-top:0;font-size:1.1rem">Compras por mes</h2>
     <p class="muted" style="margin-top:0">Últimos 6 meses · costo de entradas de stock</p>
@@ -101,6 +104,7 @@
         </tbody>
     </table>
 </div>
+@endcan
 
 <div class="grid-2">
     <div class="card">
@@ -143,6 +147,7 @@
         </table>
     </div>
 
+@can('inventory.costs')
     <div class="card">
         <h2 style="margin-top:0;font-size:1.1rem">Top por valor en stock</h2>
         <table>
@@ -169,9 +174,11 @@
             </tbody>
         </table>
     </div>
+@endcan
 </div>
 
 <div class="grid-2" style="margin-top:1rem">
+@can('inventory.costs')
     <div class="card">
         <h2 style="margin-top:0;font-size:1.1rem">Compras por proveedor · este mes</h2>
         <table>
@@ -200,6 +207,7 @@
             </tbody>
         </table>
     </div>
+@endcan
 
     <div class="card">
         <div class="topbar" style="margin-bottom:.75rem">

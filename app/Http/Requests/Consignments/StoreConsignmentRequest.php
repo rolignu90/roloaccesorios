@@ -34,6 +34,7 @@ class StoreConsignmentRequest extends FormRequest
             'items.*.product_id' => ['required', 'distinct', 'exists:products,id'],
             'items.*.quantity' => ['required', 'integer', 'min:1'],
             'items.*.unit_price_with_vat' => ['required', 'numeric', 'min:0'],
+            'items.*.price_manual' => ['nullable', 'boolean'],
         ];
     }
 

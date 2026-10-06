@@ -92,6 +92,25 @@
     <div class="field">
         <label for="{{ $namePrefix }}phone">Teléfono</label>
         <input id="{{ $namePrefix }}phone" type="text" name="{{ $field('phone') }}" value="{{ $old('phone') }}">
+        @isset($phoneAlertId)
+            <div
+                id="{{ $phoneAlertId }}"
+                class="flash"
+                style="display:none;background:#fef2f2;color:#991b1b;border-color:#fecaca;margin-top:.55rem;margin-bottom:0"
+                role="alert"
+            ></div>
+        @endisset
+        @isset($phoneDuplicateAlertId)
+            <div
+                id="{{ $phoneDuplicateAlertId }}"
+                class="flash"
+                style="display:none;background:#fffbeb;color:#92400e;border-color:#fde68a;margin-top:.55rem;margin-bottom:0"
+                role="alert"
+            ></div>
+        @endisset
+        @isset($phonePrefillHintId)
+            <p id="{{ $phonePrefillHintId }}" class="muted" style="display:none;margin:.4rem 0 0;font-size:.85rem"></p>
+        @endisset
     </div>
 </div>
 

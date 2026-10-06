@@ -18,6 +18,10 @@
         </p>
     </div>
     <div class="actions">
+        <form method="POST" action="{{ route('inventory.combos.duplicate', $combo) }}">
+            @csrf
+            <button class="btn btn-secondary" type="submit">Duplicar</button>
+        </form>
         <a class="btn btn-secondary" href="{{ route('inventory.combos.edit', $combo) }}">Editar</a>
         <a class="btn btn-secondary" href="{{ route('inventory.combos.index') }}">Volver</a>
     </div>

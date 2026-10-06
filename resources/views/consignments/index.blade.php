@@ -10,6 +10,7 @@
     </div>
     <div class="actions">
         <a class="btn btn-secondary" href="{{ route('consignments.dashboard') }}">Dashboard</a>
+        <a class="btn btn-secondary" href="{{ route('consignments.settle') }}">Liquidar</a>
         <a class="btn" href="{{ route('consignments.create') }}">Nueva consignación</a>
     </div>
 </div>

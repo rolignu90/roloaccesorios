@@ -12,6 +12,7 @@ class ConsignmentPayment extends Model
 
     protected $fillable = [
         'consignment_id',
+        'seller_settlement_id',
         'paid_at',
         'amount',
         'method',
@@ -29,5 +30,10 @@ class ConsignmentPayment extends Model
     public function consignment(): BelongsTo
     {
         return $this->belongsTo(Consignment::class);
+    }
+
+    public function sellerSettlement(): BelongsTo
+    {
+        return $this->belongsTo(SellerSettlement::class);
     }
 }

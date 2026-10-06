@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Ingresar PIN — {{ config('app.name') }}</title>
+    <title>Ingresar — {{ config('app.name') }}</title>
     <link rel="icon" type="image/png" href="{{ asset('brand/rolo-logo.png') }}">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -84,18 +84,18 @@
             color: #bdbdbd;
             font-weight: 600;
         }
-        input {
+        input[type="text"], input[type="password"] {
             width: 100%;
-            padding: .95rem 1rem;
+            padding: .85rem 1rem;
             border: 1px solid #333;
             border-radius: .65rem;
-            font-size: 1.45rem;
-            letter-spacing: .35em;
-            text-align: center;
+            font-size: 1.05rem;
             font-family: inherit;
             background: #0c0c0c;
             color: #fff;
+            margin-bottom: 1rem;
         }
+        .remember { display: flex; align-items: center; gap: .5rem; font-size: .9rem; color: #bdbdbd; letter-spacing: 0; text-transform: none; font-weight: 500; }
         input:focus {
             outline: none;
             border-color: var(--signal);
@@ -147,22 +147,21 @@
         </div>
         <div class="panel">
             <h1>Acceso</h1>
-            <p class="lede">Ingresa el PIN para continuar al CRM.</p>
+            <p class="lede">Ingresa con tu usuario y contraseña.</p>
 
             <form method="POST" action="{{ route('login.store') }}">
                 @csrf
-                <label for="pin">PIN</label>
-                <input
-                    id="pin"
-                    type="password"
-                    name="pin"
-                    inputmode="numeric"
-                    autocomplete="one-time-code"
-                    autofocus
-                    required
-                >
+                <label for="username">Usuario</label>
+                <input id="username" type="text" name="username" value="{{ old('username') }}" autocomplete="username" autocapitalize="none" autofocus required>
 
-                @error('pin')
+                <label for="password">Contraseña</label>
+                <input id="password" type="password" name="password" autocomplete="current-password" required>
+
+                <label class="remember">
+                    <input type="checkbox" name="remember" value="1" @checked(old('remember'))> Mantener sesión iniciada
+                </label>
+
+                @error('username')
                     <p class="error">{{ $message }}</p>
                 @enderror
 

@@ -16,9 +16,7 @@ use RuntimeException;
 
 class SaleService
 {
-    public function __construct(private FifoInventoryService $fifo)
-    {
-    }
+    public function __construct(private FifoInventoryService $fifo) {}
 
     public function create(array $data): Sale
     {
@@ -150,6 +148,9 @@ class SaleService
                 'gross_margin' => 0,
                 'payment_method' => $data['payment_method'] ?? 'cash',
                 'notes' => $data['notes'] ?? null,
+                'channel' => $data['channel'] ?? Sale::CHANNEL_CRM,
+                'created_by_user_id' => auth()->id(),
+                'external_order_id' => $data['external_order_id'] ?? null,
             ]);
 
             $saleCogs = 0.0;
@@ -219,29 +220,15 @@ class SaleService
         return DB::transaction(function () use ($sale) {
             $sale->load('items.lotAllocations');
 
-            $restore = [];
-            foreach ($sale->items as $item) {
-                foreach ($item->lotAllocations as $allocation) {
-                    if ($allocation->inventory_lot_id === null) {
-                        continue;
-                    }
-                    $restore[] = [
-                        'lot_id' => $allocation->inventory_lot_id,
-                        'quantity' => $allocation->quantity,
-                    ];
-                }
+            // Devolución ya reingresó stock; anular después no debe duplicarlo.
+            if (! $sale->isReturned()) {
+                $this->restoreSaleStock($sale, 'Restauración por anulación '.$sale->number);
             }
-
-            $this->fifo->restore($restore, [
-                'type' => 'sale',
-                'id' => $sale->id,
-                'occurred_at' => now(),
-                'notes' => 'Restauración por anulación '.$sale->number,
-            ]);
 
             $sale->update([
                 'status' => Sale::STATUS_VOIDED,
                 'voided_at' => now(),
+                'voided_by_user_id' => auth()->id(),
                 'status_changed_at' => now(),
             ]);
 
@@ -265,6 +252,69 @@ class SaleService
         ])->save();
 
         return $sale->fresh();
+    }
+
+    /**
+     * Devolución: el producto vuelve → reingresa stock FIFO (ciclo de envío cumplido).
+     * Distinto de anular: ahí el pedido no cerró el ciclo (error / cancelación previa).
+     */
+    public function markReturned(Sale $sale): Sale
+    {
+        if ($sale->isVoided()) {
+            throw new RuntimeException('No se puede marcar devolución en una venta anulada.');
+        }
+
+        if ($sale->isReturned()) {
+            return $sale;
+        }
+
+        if (! $sale->canProgressToStatus(Sale::STATUS_RETURNED)) {
+            throw new RuntimeException('Esta venta no se puede marcar como devolución desde su estado actual.');
+        }
+
+        return DB::transaction(function () use ($sale) {
+            $sale = Sale::query()->lockForUpdate()->findOrFail($sale->id);
+            $sale->load('items.lotAllocations');
+
+            $this->restoreSaleStock($sale, 'Restauración por devolución '.$sale->number);
+
+            $sale->update([
+                'status' => Sale::STATUS_RETURNED,
+                'status_changed_at' => now(),
+            ]);
+
+            return $sale->fresh(['customer', 'seller', 'items.product', 'items.lotAllocations.inventoryLot']);
+        });
+    }
+
+    /**
+     * @return list<array{lot_id: int, quantity: int}>
+     */
+    private function restoreSaleStock(Sale $sale, string $notes): array
+    {
+        $restore = [];
+        foreach ($sale->items as $item) {
+            foreach ($item->lotAllocations as $allocation) {
+                if ($allocation->inventory_lot_id === null) {
+                    continue;
+                }
+                $restore[] = [
+                    'lot_id' => (int) $allocation->inventory_lot_id,
+                    'quantity' => (int) $allocation->quantity,
+                ];
+            }
+        }
+
+        if ($restore !== []) {
+            $this->fifo->restore($restore, [
+                'type' => 'sale',
+                'id' => $sale->id,
+                'occurred_at' => now(),
+                'notes' => $notes,
+            ]);
+        }
+
+        return $restore;
     }
 
     public function addItem(Sale $sale, array $data): Sale
@@ -324,9 +374,18 @@ class SaleService
 
     public function updateItemQuantity(Sale $sale, SaleItem $item, int $quantity): Sale
     {
+        return $this->updateItem($sale, $item, ['quantity' => $quantity]);
+    }
+
+    /**
+     * @param  array{quantity:int, unit_price_with_vat?:float|int|string|null, discount_percent?:float|int|string|null, discount_amount?:float|int|string|null}  $data
+     */
+    public function updateItem(Sale $sale, SaleItem $item, array $data): Sale
+    {
         $this->assertConfirmed($sale);
         $this->assertItemBelongsToSale($sale, $item);
 
+        $quantity = (int) ($data['quantity'] ?? $item->quantity);
         if ($quantity < 0) {
             throw new InvalidArgumentException('La cantidad no puede ser negativa.');
         }
@@ -335,14 +394,26 @@ class SaleService
             return $this->removeItem($sale, $item);
         }
 
-        return DB::transaction(function () use ($sale, $item, $quantity) {
+        return DB::transaction(function () use ($sale, $item, $quantity, $data) {
             $sale = Sale::query()->lockForUpdate()->findOrFail($sale->id);
             $item = SaleItem::query()->lockForUpdate()->with(['product', 'lotAllocations'])->findOrFail($item->id);
             $current = (int) $item->quantity;
+            $vatRate = (float) $sale->vat_rate;
 
-            if ($quantity === $current) {
-                return $sale->fresh(['customer', 'seller', 'shippingCarrier', 'items.product', 'items.lotAllocations.inventoryLot']);
-            }
+            $priceTouched = array_key_exists('unit_price_with_vat', $data)
+                || array_key_exists('discount_percent', $data)
+                || array_key_exists('discount_amount', $data);
+
+            $unitPriceWithVat = array_key_exists('unit_price_with_vat', $data)
+                ? round((float) $data['unit_price_with_vat'], 2)
+                : round(price_with_vat((float) $item->unit_price_without_vat), 2);
+            $unitPrice = round($unitPriceWithVat / (1 + $vatRate), 4);
+            $discountPercent = array_key_exists('discount_percent', $data)
+                ? (float) $data['discount_percent']
+                : (float) $item->discount_percent;
+            $discountAmount = array_key_exists('discount_amount', $data)
+                ? (float) $data['discount_amount']
+                : (float) $item->discount_amount;
 
             if ($quantity > $current) {
                 $delta = $quantity - $current;
@@ -372,16 +443,80 @@ class SaleService
                 $item->update([
                     'quantity' => $quantity,
                     'cogs_total' => round($itemCogs, 2),
+                    'unit_price_without_vat' => $unitPrice,
+                    'discount_percent' => $discountPercent,
+                    'discount_amount' => $discountAmount,
                 ]);
-            } else {
+            } elseif ($quantity < $current) {
                 $delta = $current - $quantity;
                 $this->restoreQuantityFromItem($sale, $item, $delta);
                 $item->refresh()->load('lotAllocations');
                 $item->update([
                     'quantity' => $quantity,
                     'cogs_total' => round((float) $item->lotAllocations->sum('cogs_amount'), 2),
+                    'unit_price_without_vat' => $unitPrice,
+                    'discount_percent' => $discountPercent,
+                    'discount_amount' => $discountAmount,
                 ]);
+            } elseif ($priceTouched) {
+                $item->update([
+                    'unit_price_without_vat' => $unitPrice,
+                    'discount_percent' => $discountPercent,
+                    'discount_amount' => $discountAmount,
+                ]);
+            } else {
+                return $sale->fresh(['customer', 'seller', 'shippingCarrier', 'items.product', 'items.lotAllocations.inventoryLot']);
             }
+
+            return $this->recalculateTotals($sale->fresh());
+        });
+    }
+
+    /**
+     * @param  array{discount_percent?:float|int|string|null, discount_amount?:float|int|string|null, target_products_total_with_vat?:float|int|string|null}  $data
+     */
+    public function updateDiscounts(Sale $sale, array $data): Sale
+    {
+        $this->assertConfirmed($sale);
+
+        return DB::transaction(function () use ($sale, $data) {
+            $sale = Sale::query()->lockForUpdate()->with('items')->findOrFail($sale->id);
+            $vatRate = (float) $sale->vat_rate;
+
+            $discountPercent = round((float) ($data['discount_percent'] ?? $sale->discount_percent), 2);
+            $discountAmount = round((float) ($data['discount_amount'] ?? $sale->discount_amount), 2);
+
+            if (array_key_exists('target_products_total_with_vat', $data)
+                && $data['target_products_total_with_vat'] !== null
+                && $data['target_products_total_with_vat'] !== ''
+            ) {
+                $target = round((float) $data['target_products_total_with_vat'], 2);
+                $grossWithVat = 0.0;
+
+                foreach ($sale->items as $item) {
+                    $unitWithVat = price_with_vat((float) $item->unit_price_without_vat);
+                    $lineGross = round((int) $item->quantity * $unitWithVat, 2);
+                    $linePercent = round($lineGross * (((float) $item->discount_percent) / 100), 2);
+                    $lineDisc = min($lineGross, round($linePercent + (float) $item->discount_amount, 2));
+                    $grossWithVat += round($lineGross - $lineDisc, 2);
+                }
+
+                $grossWithVat = round($grossWithVat, 2);
+                if ($target > $grossWithVat) {
+                    throw new InvalidArgumentException(
+                        'El total de productos deseado ('.number_format($target, 2).') no puede ser mayor al bruto c/IVA ('.number_format($grossWithVat, 2).'). Sube el precio unitario o baja descuentos de línea.'
+                    );
+                }
+
+                // Prefer amount discount so the target matches exactly after % = 0.
+                $discountPercent = 0.0;
+                $discountAmount = round(max(0, $grossWithVat - $target), 2);
+            }
+
+            $sale->update([
+                'discount_percent' => $discountPercent,
+                'discount_amount' => $discountAmount,
+            ]);
 
             return $this->recalculateTotals($sale->fresh());
         });

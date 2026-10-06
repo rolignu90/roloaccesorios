@@ -100,6 +100,15 @@ class ComboController extends Controller
             ->with('success', 'Combo desactivado. El historial de ventas se conserva.');
     }
 
+    public function duplicate(Combo $combo): RedirectResponse
+    {
+        $copy = $combo->duplicate();
+
+        return redirect()
+            ->route('inventory.combos.edit', $copy)
+            ->with('success', "Combo duplicado como {$copy->code}. Revisa y guarda si necesitas ajustar.");
+    }
+
     private function activeProducts(?Combo $combo = null)
     {
         $ids = $combo?->items->pluck('product_id') ?? collect();

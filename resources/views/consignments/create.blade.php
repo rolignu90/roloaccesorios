@@ -107,6 +107,7 @@
                         <div class="field">
                             <label>Precio c/IVA</label>
                             <input type="number" min="0" step="0.01" name="items[{{ $index }}][unit_price_with_vat]" value="{{ $item['unit_price_with_vat'] ?? '' }}" data-price-input required>
+                            <input type="hidden" name="items[{{ $index }}][price_manual]" value="{{ !empty($item['price_manual']) ? '1' : '0' }}" data-price-manual>
                             <p class="muted" style="margin:.25rem 0 0;font-size:.78rem" data-price-hint></p>
                         </div>
                         <div class="field" style="display:flex;align-items:flex-end;padding-bottom:.4rem">
@@ -161,6 +162,7 @@
         <div class="field">
             <label>Precio c/IVA</label>
             <input type="number" min="0" step="0.01" name="items[__INDEX__][unit_price_with_vat]" value="" data-price-input required>
+            <input type="hidden" name="items[__INDEX__][price_manual]" value="0" data-price-manual>
             <p class="muted" style="margin:.25rem 0 0;font-size:.78rem" data-price-hint></p>
         </div>
         <div class="field" style="display:flex;align-items:flex-end;padding-bottom:.4rem">
@@ -180,10 +182,17 @@
     const sellerSelect = document.getElementById('seller_id');
     const customerSelect = document.getElementById('customer_id');
 
+    const setManualFlag = (row, manual) => {
+        const flag = row?.querySelector('[data-price-manual]');
+        const priceInput = row?.querySelector('[data-price-input]');
+        if (flag) flag.value = manual ? '1' : '0';
+        if (priceInput) priceInput.dataset.manual = manual ? '1' : '';
+    };
+
     const currentCustomerId = () => {
         const type = document.querySelector('[data-party-type]:checked')?.value || 'seller';
         if (type !== 'customer') return null;
-        const id = customerSelect?.value;
+        const id = customerSelect?.value || customerSelect?.tomselect?.getValue?.();
         return id ? String(id) : null;
     };
 
@@ -224,7 +233,7 @@
         }
         const resolved = resolvePrice(productId, qtyInput?.value || 1);
         priceInput.value = Number(resolved.price || 0).toFixed(2);
-        priceInput.dataset.manual = '';
+        setManualFlag(row, false);
         if (hint) hint.textContent = 'Auto: ' + resolved.source;
     };
 
@@ -262,7 +271,9 @@
     document.querySelectorAll('[data-party-type]').forEach((el) => {
         el.addEventListener('change', syncParty);
     });
-    customerSelect?.addEventListener('change', () => applyAllRowPrices(true));
+    const onCustomerChanged = () => applyAllRowPrices(true);
+    customerSelect?.addEventListener('change', onCustomerChanged);
+    customerSelect?.addEventListener('searchable:change', onCustomerChanged);
 
     const bootParty = () => syncParty();
     if (document.readyState === 'loading') {
@@ -313,7 +324,7 @@
 
     rows?.addEventListener('input', (e) => {
         if (e.target.matches('[data-price-input]')) {
-            e.target.dataset.manual = '1';
+            setManualFlag(e.target.closest('[data-row]'), true);
             const hint = e.target.closest('[data-row]')?.querySelector('[data-price-hint]');
             if (hint) hint.textContent = 'Precio manual';
         }

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -27,6 +28,18 @@ class Sale extends Model
     public const SISTRACK_SENT = 'sent';
 
     public const SISTRACK_FAILED = 'failed';
+
+    public const CHANNEL_CRM = 'crm';
+
+    public const CHANNEL_ECOMMERCE = 'ecommerce';
+
+    public const CHANNEL_STORE = 'store';
+
+    public const CHANNEL_LABELS = [
+        self::CHANNEL_CRM => 'En línea',
+        self::CHANNEL_STORE => 'Tienda',
+        self::CHANNEL_ECOMMERCE => 'Web',
+    ];
 
     /** Estados que cuentan para ingresos / márgenes. */
     public const REVENUE_STATUSES = [
@@ -87,6 +100,14 @@ class Sale extends Model
         'gross_margin',
         'payment_method',
         'notes',
+        'channel',
+        'cash_session_id',
+        'store_id',
+        'created_by_user_id',
+        'voided_by_user_id',
+        'amount_received',
+        'change_given',
+        'external_order_id',
         'sistrack_status',
         'sistrack_external_id',
         'sistrack_order_id',
@@ -119,7 +140,65 @@ class Sale extends Model
             'total' => 'decimal:2',
             'cogs_total' => 'decimal:2',
             'gross_margin' => 'decimal:2',
+            'amount_received' => 'decimal:2',
+            'change_given' => 'decimal:2',
         ];
+    }
+
+    public function cashSession(): BelongsTo
+    {
+        return $this->belongsTo(CashSession::class);
+    }
+
+    public function store(): BelongsTo
+    {
+        return $this->belongsTo(Store::class);
+    }
+
+    public function createdBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'created_by_user_id');
+    }
+
+    public function voidedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'voided_by_user_id');
+    }
+
+    /**
+     * Without sales.view_all a user only sees sales of their linked seller or that they created.
+     */
+    public function scopeVisibleTo(Builder $query, ?User $user): Builder
+    {
+        if ($user?->hasPermission('sales.view_all')) {
+            return $query;
+        }
+
+        return $query->where(function (Builder $inner) use ($user) {
+            $inner->where('created_by_user_id', $user?->id ?? 0);
+            if ($user?->seller_id) {
+                $inner->orWhere('seller_id', $user->seller_id);
+            }
+        });
+    }
+
+    public function isVisibleTo(?User $user): bool
+    {
+        return static::query()->whereKey($this->id)->visibleTo($user)->exists();
+    }
+
+    public function isStoreSale(): bool
+    {
+        return $this->channel === self::CHANNEL_STORE;
+    }
+
+    public function channelLabel(): string
+    {
+        if ($this->isStoreSale() && $this->store) {
+            return $this->store->name;
+        }
+
+        return self::CHANNEL_LABELS[$this->channel] ?? (string) $this->channel;
     }
 
     public function customer(): BelongsTo
@@ -140,6 +219,11 @@ class Sale extends Model
     public function items(): HasMany
     {
         return $this->hasMany(SaleItem::class);
+    }
+
+    public function settlementItems(): HasMany
+    {
+        return $this->hasMany(SellerSettlementItem::class);
     }
 
     public function scopeRevenue(Builder $query): Builder
@@ -214,6 +298,20 @@ class Sale extends Model
         return $this->status === self::STATUS_RETURNED;
     }
 
+    public function canMarkReturned(): bool
+    {
+        return ! $this->isVoided()
+            && ! $this->isReturned()
+            && $this->canProgressToStatus(self::STATUS_RETURNED);
+    }
+
+    public function canMarkDelivered(): bool
+    {
+        return ! $this->isVoided()
+            && ! $this->isDelivered()
+            && $this->canProgressToStatus(self::STATUS_DELIVERED);
+    }
+
     public function isOpenForRevenue(): bool
     {
         return in_array($this->status, self::REVENUE_STATUSES, true);
@@ -250,7 +348,7 @@ class Sale extends Model
         };
     }
 
-    public function inTransitSince(): ?\Carbon\CarbonInterface
+    public function inTransitSince(): ?CarbonInterface
     {
         if (! $this->isInTransit()) {
             return null;
@@ -303,12 +401,54 @@ class Sale extends Model
 
     public function canSendToSistrack(): bool
     {
+        return $this->isConfirmed()
+            && ! $this->isSistrackSent()
+            && $this->isEligibleForSistrackPush();
+    }
+
+    /**
+     * Ya se envió y se puede crear otra etiqueta (p. ej. si la borraron en Sistrack).
+     */
+    public function canResendToSistrack(): bool
+    {
+        return $this->isSistrackSent()
+            && $this->isEligibleForSistrackPush();
+    }
+
+    public function hasSistrackLabel(): bool
+    {
+        return $this->isSistrackSent()
+            && filled($this->sistrack_external_id)
+            && ! $this->isVoided();
+    }
+
+    public function isEligibleForSistrackPush(): bool
+    {
         $this->loadMissing('shippingCarrier');
 
-        return $this->isConfirmed()
+        return ! $this->isVoided()
             && $this->has_shipping
-            && ! $this->isSistrackSent()
             && (bool) $this->shippingCarrier?->supportsSistrack();
+    }
+
+    /**
+     * Transferencias ya se cobraron; Sistrack no debe pedir contra entrega.
+     */
+    public function isPaidBeforeShipping(): bool
+    {
+        return $this->payment_method === 'transfer';
+    }
+
+    /**
+     * Monto que Sistrack debe mostrar / cobrar al entregar.
+     */
+    public function sistrackCollectAmount(): float
+    {
+        if ($this->isPaidBeforeShipping()) {
+            return 0.0;
+        }
+
+        return round((float) $this->total, 2);
     }
 
     public function sistrackStatusLabel(): string

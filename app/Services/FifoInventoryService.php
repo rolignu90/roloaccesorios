@@ -2,10 +2,14 @@
 
 namespace App\Services;
 
+use App\Models\Consignment;
+use App\Models\ConsignmentLotAllocation;
 use App\Models\InventoryLot;
 use App\Models\InventoryMovement;
 use App\Models\Product;
 use App\Models\ProductSupplier;
+use App\Models\Sale;
+use App\Models\SaleLotAllocation;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use RuntimeException;
@@ -74,15 +78,24 @@ class FifoInventoryService
     }
 
     /**
-     * Units sold on-demand still waiting for a physical lot (for UI hints).
+     * Units sold/consigned on-demand still waiting for a physical lot (for UI hints).
      */
     public function pendingOnDemandQuantity(int $productId): int
     {
-        return (int) \App\Models\SaleLotAllocation::query()
+        $fromSales = (int) SaleLotAllocation::query()
             ->whereNull('inventory_lot_id')
             ->whereHas('saleItem', fn ($q) => $q->where('product_id', $productId))
             ->whereHas('saleItem.sale', fn ($q) => $q->onDemandVisible())
             ->sum('quantity');
+
+        $fromConsignments = (int) ConsignmentLotAllocation::query()
+            ->whereNull('inventory_lot_id')
+            ->whereHas('consignmentItem', fn ($q) => $q->where('product_id', $productId))
+            ->whereHas('consignmentItem.consignment', fn ($q) => $q->where('status', '!=', Consignment::STATUS_VOIDED))
+            ->selectRaw('COALESCE(SUM(GREATEST(quantity - quantity_returned, 0)), 0) as pending')
+            ->value('pending');
+
+        return $fromSales + $fromConsignments;
     }
 
     /**
@@ -117,7 +130,7 @@ class FifoInventoryService
     }
 
     /**
-     * Assign incoming stock to oldest open on-demand allocations.
+     * Assign incoming stock to oldest open on-demand allocations (ventas + consignaciones).
      *
      * @return int units covered
      */
@@ -127,24 +140,26 @@ class FifoInventoryService
             return 0;
         }
 
-        $allocations = \App\Models\SaleLotAllocation::query()
+        $toCover = $available;
+        $covered = 0;
+        $affectedSaleIds = [];
+        $affectedConsignmentIds = [];
+
+        // 1) Ventas on demand (más antiguas primero).
+        $saleAllocations = SaleLotAllocation::query()
             ->select('sale_lot_allocations.*')
             ->join('sale_items', 'sale_items.id', '=', 'sale_lot_allocations.sale_item_id')
             ->join('sales', 'sales.id', '=', 'sale_items.sale_id')
             ->whereNull('sale_lot_allocations.inventory_lot_id')
             ->where('sale_items.product_id', $lot->product_id)
-            ->whereIn('sales.status', \App\Models\Sale::ON_DEMAND_STATUSES)
+            ->whereIn('sales.status', Sale::ON_DEMAND_STATUSES)
             ->orderBy('sales.sold_at')
             ->orderBy('sale_lot_allocations.id')
             ->lockForUpdate()
             ->with(['saleItem.sale'])
             ->get();
 
-        $toCover = $available;
-        $covered = 0;
-        $affectedSaleIds = [];
-
-        foreach ($allocations as $allocation) {
+        foreach ($saleAllocations as $allocation) {
             if ($toCover <= 0) {
                 break;
             }
@@ -172,7 +187,7 @@ class FifoInventoryService
                     'cogs_amount' => round($take * $unitPrice, 2),
                 ]);
 
-                \App\Models\SaleLotAllocation::query()->create([
+                SaleLotAllocation::query()->create([
                     'sale_item_id' => $allocation->sale_item_id,
                     'inventory_lot_id' => null,
                     'quantity' => $remainder,
@@ -188,8 +203,88 @@ class FifoInventoryService
             }
         }
 
+        // 2) Consignaciones on demand (más antiguas primero).
+        if ($toCover > 0) {
+            $consignmentAllocations = ConsignmentLotAllocation::query()
+                ->select('consignment_lot_allocations.*')
+                ->join('consignment_items', 'consignment_items.id', '=', 'consignment_lot_allocations.consignment_item_id')
+                ->join('consignments', 'consignments.id', '=', 'consignment_items.consignment_id')
+                ->whereNull('consignment_lot_allocations.inventory_lot_id')
+                ->where('consignment_items.product_id', $lot->product_id)
+                ->where('consignments.status', '!=', Consignment::STATUS_VOIDED)
+                ->orderBy('consignments.delivered_at')
+                ->orderBy('consignment_lot_allocations.id')
+                ->lockForUpdate()
+                ->with(['consignmentItem.consignment'])
+                ->get();
+
+            foreach ($consignmentAllocations as $allocation) {
+                if ($toCover <= 0) {
+                    break;
+                }
+
+                $need = $allocation->quantityOutstanding();
+                if ($need <= 0) {
+                    continue;
+                }
+
+                $take = min($need, $toCover);
+                $estimatedPrice = (float) $allocation->purchase_price;
+                $alreadyReturned = (int) $allocation->quantity_returned;
+
+                if ($take === $need && $alreadyReturned === 0) {
+                    $allocation->update([
+                        'inventory_lot_id' => $lot->id,
+                        'purchase_price' => $unitPrice,
+                        'cogs_amount' => round($take * $unitPrice, 2),
+                    ]);
+                } elseif ($take === $need) {
+                    // Toda la parte pendiente se cubre; deja lo ya devuelto sin lote.
+                    $allocation->update([
+                        'quantity' => $alreadyReturned,
+                        'cogs_amount' => round($alreadyReturned * $estimatedPrice, 2),
+                    ]);
+
+                    ConsignmentLotAllocation::query()->create([
+                        'consignment_item_id' => $allocation->consignment_item_id,
+                        'inventory_lot_id' => $lot->id,
+                        'quantity' => $take,
+                        'quantity_returned' => 0,
+                        'purchase_price' => $unitPrice,
+                        'cogs_amount' => round($take * $unitPrice, 2),
+                    ]);
+                } else {
+                    // Cubre parcialmente lo pendiente.
+                    $remainingOpen = $need - $take;
+                    $allocation->update([
+                        'quantity' => $alreadyReturned + $remainingOpen,
+                        'cogs_amount' => round(($alreadyReturned + $remainingOpen) * $estimatedPrice, 2),
+                    ]);
+
+                    ConsignmentLotAllocation::query()->create([
+                        'consignment_item_id' => $allocation->consignment_item_id,
+                        'inventory_lot_id' => $lot->id,
+                        'quantity' => $take,
+                        'quantity_returned' => 0,
+                        'purchase_price' => $unitPrice,
+                        'cogs_amount' => round($take * $unitPrice, 2),
+                    ]);
+                }
+
+                $toCover -= $take;
+                $covered += $take;
+                if ($allocation->consignmentItem?->consignment_id) {
+                    $affectedConsignmentIds[] = (int) $allocation->consignmentItem->consignment_id;
+                }
+            }
+        }
+
         foreach (array_unique($affectedSaleIds) as $saleId) {
             $this->recalculateSaleCogs($saleId);
+        }
+
+        foreach (array_unique($affectedConsignmentIds) as $consignmentId) {
+            $this->recalculateConsignmentCogs($consignmentId);
         }
 
         return $covered;
@@ -197,7 +292,7 @@ class FifoInventoryService
 
     private function recalculateSaleCogs(int $saleId): void
     {
-        $sale = \App\Models\Sale::query()
+        $sale = Sale::query()
             ->with('items.lotAllocations')
             ->lockForUpdate()
             ->find($saleId);
@@ -218,6 +313,27 @@ class FifoInventoryService
             'cogs_total' => $saleCogs,
             'gross_margin' => round((float) $sale->taxable_base - $saleCogs, 2),
         ]);
+    }
+
+    private function recalculateConsignmentCogs(int $consignmentId): void
+    {
+        $consignment = Consignment::query()
+            ->with('items.lotAllocations')
+            ->lockForUpdate()
+            ->find($consignmentId);
+
+        if (! $consignment || $consignment->isVoided()) {
+            return;
+        }
+
+        $cogsTotal = 0.0;
+        foreach ($consignment->items as $item) {
+            $itemCogs = round((float) $item->lotAllocations->sum('cogs_amount'), 2);
+            $item->update(['cogs_total' => $itemCogs]);
+            $cogsTotal += $itemCogs;
+        }
+
+        $consignment->update(['cogs_total' => round($cogsTotal, 2)]);
     }
 
     /**

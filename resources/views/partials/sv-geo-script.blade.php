@@ -7,6 +7,19 @@
 
     const departments = JSON.parse(dataEl.textContent || '[]');
 
+    const setSelectValue = (select, value, silent = false) => {
+        if (!select) return;
+        const next = value ?? '';
+        if (select.tomselect) {
+            select.tomselect.setValue(next, silent);
+            return;
+        }
+        select.value = next;
+        if (!silent) {
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    };
+
     const fillMunicipalities = (root, preserve = true) => {
         const deptSelect = root.querySelector('[data-geo-department]');
         const muniSelect = root.querySelector('[data-geo-municipality]');
@@ -36,7 +49,15 @@
             muniSelect.appendChild(option);
         });
 
+        if (previousMuni) {
+            muniSelect.value = previousMuni;
+            muniSelect.dataset.selected = previousMuni;
+        }
+
         window.initSearchableSelects?.(muniSelect);
+        if (muniSelect.tomselect && previousMuni) {
+            muniSelect.tomselect.setValue(previousMuni, true);
+        }
         syncPostal(root);
     };
 
@@ -73,6 +94,35 @@
         postalInput?.addEventListener('input', () => {
             postalInput.dataset.manual = '1';
         });
+    };
+
+    /**
+     * Prefill departamento + municipio (compatible con Tom Select).
+     */
+    window.setSvGeoValues = (rootOrScope, department, municipality) => {
+        const root = rootOrScope?.matches?.('[data-geo-root]')
+            ? rootOrScope
+            : rootOrScope?.querySelector?.('[data-geo-root]');
+        if (!root) return;
+
+        bindRoot(root);
+
+        const deptSelect = root.querySelector('[data-geo-department]');
+        const muniSelect = root.querySelector('[data-geo-municipality]');
+        const postalInput = root.querySelector('[data-geo-postal]');
+        if (!deptSelect) return;
+
+        if (postalInput) delete postalInput.dataset.manual;
+        if (muniSelect) muniSelect.dataset.selected = municipality || '';
+
+        setSelectValue(deptSelect, department || '', true);
+        fillMunicipalities(root, true);
+
+        if (municipality && muniSelect) {
+            muniSelect.dataset.selected = municipality;
+            setSelectValue(muniSelect, municipality, true);
+            syncPostal(root);
+        }
     };
 
     window.initSvGeoCascades = (scope = document) => {

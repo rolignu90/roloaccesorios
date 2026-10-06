@@ -9,6 +9,7 @@ use App\Models\ConsignmentPayment;
 use App\Models\ConsignmentReturn;
 use App\Models\InventoryMovement;
 use App\Models\Product;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use RuntimeException;
@@ -18,8 +19,7 @@ class ConsignmentService
     public function __construct(
         private FifoInventoryService $fifo,
         private CustomerPricingService $customerPricing,
-    ) {
-    }
+    ) {}
 
     public function create(array $data): Consignment
     {
@@ -64,12 +64,25 @@ class ConsignmentService
             foreach ($items as $row) {
                 $product = Product::query()->lockForUpdate()->findOrFail($row['product_id']);
                 $quantity = (int) $row['quantity'];
-                if (array_key_exists('unit_price_with_vat', $row) && $row['unit_price_with_vat'] !== null && $row['unit_price_with_vat'] !== '') {
+                $manualPrice = filter_var($row['price_manual'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
+                // Para cliente: siempre aplicar tramos/mayoreo del cliente salvo override manual.
+                // Evita que el formulario mande precio de reventa genérico y ignore el descuento.
+                if ($customerId && ! $manualPrice) {
+                    $unitWithVat = round(
+                        $this->customerPricing->resolveUnitPriceWithVat(
+                            (int) $customerId,
+                            $product,
+                            $quantity
+                        ),
+                        2
+                    );
+                } elseif (array_key_exists('unit_price_with_vat', $row) && $row['unit_price_with_vat'] !== null && $row['unit_price_with_vat'] !== '') {
                     $unitWithVat = round((float) $row['unit_price_with_vat'], 2);
                 } else {
                     $unitWithVat = round(
                         $this->customerPricing->resolveUnitPriceWithVat(
-                            $customerId ? (int) $customerId : null,
+                            null,
                             $product,
                             $quantity
                         ),
@@ -139,32 +152,257 @@ class ConsignmentService
         return DB::transaction(function () use ($consignment, $data) {
             $consignment = Consignment::query()->lockForUpdate()->findOrFail($consignment->id);
 
-            if (! $consignment->canReceivePayment()) {
-                throw new RuntimeException('Esta consignación no acepta más pagos.');
-            }
-
-            $amount = round((float) $data['amount'], 2);
-            if ($amount <= 0) {
-                throw new InvalidArgumentException('El monto del pago debe ser mayor a 0.');
-            }
-
-            $balance = (float) $consignment->balance_with_vat;
-            if ($amount > $balance + 0.009) {
-                throw new InvalidArgumentException('El pago no puede superar el saldo adeudado ('.money($balance).').');
-            }
-
-            $payment = ConsignmentPayment::query()->create([
-                'consignment_id' => $consignment->id,
-                'paid_at' => $data['paid_at'] ?? now(),
-                'amount' => $amount,
-                'method' => $data['method'] ?? 'cash',
-                'notes' => $data['notes'] ?? null,
-            ]);
-
-            $this->recalcTotals($consignment);
-
-            return $payment;
+            return $this->recordPaymentLocked($consignment, $data);
         });
+    }
+
+    /**
+     * Entregas abiertas/parciales con saldo del consignatario (más antiguas primero).
+     *
+     * @return Collection<int, Consignment>
+     */
+    public function openConsignmentsForParty(string $partyType, int $partyId): Collection
+    {
+        if (! in_array($partyType, [Consignment::PARTY_SELLER, Consignment::PARTY_CUSTOMER], true)) {
+            throw new InvalidArgumentException('Tipo de consignatario inválido.');
+        }
+
+        return Consignment::query()
+            ->with(['seller', 'customer'])
+            ->where('party_type', $partyType)
+            ->when(
+                $partyType === Consignment::PARTY_SELLER,
+                fn ($q) => $q->where('seller_id', $partyId),
+                fn ($q) => $q->where('customer_id', $partyId)
+            )
+            ->whereIn('status', [Consignment::STATUS_OPEN, Consignment::STATUS_PARTIAL])
+            ->where('balance_with_vat', '>', 0.009)
+            ->orderBy('delivered_at')
+            ->orderBy('id')
+            ->get();
+    }
+
+    /**
+     * Liquidación múltiple: un pago por cada allocation (misma fecha/método/notas).
+     *
+     * @param  list<array{consignment_id: int, amount: float|int|string}>  $allocations
+     * @param  array{paid_at?: mixed, method?: string, notes?: ?string}  $meta
+     * @return array{payments: list<ConsignmentPayment>, total: float, count: int}
+     */
+    public function settleParty(string $partyType, int $partyId, array $allocations, array $meta = []): array
+    {
+        $rows = collect($allocations)
+            ->map(fn (array $row) => [
+                'consignment_id' => (int) ($row['consignment_id'] ?? 0),
+                'amount' => round((float) ($row['amount'] ?? 0), 2),
+            ])
+            ->filter(fn (array $row) => $row['consignment_id'] > 0 && $row['amount'] > 0.009)
+            ->values();
+
+        if ($rows->isEmpty()) {
+            throw new InvalidArgumentException('Indica al menos un monto a liquidar.');
+        }
+
+        return DB::transaction(function () use ($partyType, $partyId, $rows, $meta) {
+            $payments = [];
+            $total = 0.0;
+
+            foreach ($rows as $row) {
+                $consignment = Consignment::query()->lockForUpdate()->findOrFail($row['consignment_id']);
+
+                if ($consignment->party_type !== $partyType) {
+                    throw new InvalidArgumentException(
+                        "La consignación {$consignment->number} no pertenece a este consignatario."
+                    );
+                }
+
+                $belongs = $partyType === Consignment::PARTY_SELLER
+                    ? (int) $consignment->seller_id === $partyId
+                    : (int) $consignment->customer_id === $partyId;
+
+                if (! $belongs) {
+                    throw new InvalidArgumentException(
+                        "La consignación {$consignment->number} no pertenece a este consignatario."
+                    );
+                }
+
+                $payment = $this->recordPaymentLocked($consignment, [
+                    'amount' => $row['amount'],
+                    'paid_at' => $meta['paid_at'] ?? now(),
+                    'method' => $meta['method'] ?? 'cash',
+                    'notes' => $meta['notes'] ?? null,
+                    'seller_settlement_id' => $meta['seller_settlement_id'] ?? null,
+                ]);
+
+                $payments[] = $payment;
+                $total += (float) $payment->amount;
+            }
+
+            return [
+                'payments' => $payments,
+                'total' => round($total, 2),
+                'count' => count($payments),
+            ];
+        });
+    }
+
+    /**
+     * Planifica (sin guardar) cómo repartir un monto FIFO entre consignaciones abiertas.
+     *
+     * @return list<array{consignment_id:int, amount:float, number:string, balance:float, party_type:string}>
+     */
+    public function planAmountFifo(?int $customerId, ?int $sellerId, float $amount): array
+    {
+        $amount = round($amount, 2);
+        if ($amount <= 0.009) {
+            return [];
+        }
+
+        $open = collect();
+        if ($customerId) {
+            $open = $open->concat($this->openConsignmentsForParty(Consignment::PARTY_CUSTOMER, $customerId));
+        }
+        if ($sellerId) {
+            $open = $open->concat($this->openConsignmentsForParty(Consignment::PARTY_SELLER, $sellerId));
+        }
+
+        $open = $open
+            ->unique('id')
+            ->sortBy([
+                ['delivered_at', 'asc'],
+                ['id', 'asc'],
+            ])
+            ->values();
+
+        $remaining = $amount;
+        $allocations = [];
+
+        foreach ($open as $consignment) {
+            if ($remaining <= 0.009) {
+                break;
+            }
+            $balance = round((float) $consignment->balance_with_vat, 2);
+            if ($balance <= 0.009) {
+                continue;
+            }
+            $take = min($balance, $remaining);
+            $allocations[] = [
+                'consignment_id' => (int) $consignment->id,
+                'amount' => $take,
+                'number' => $consignment->number,
+                'balance' => $balance,
+                'party_type' => $consignment->party_type,
+            ];
+            $remaining = round($remaining - $take, 2);
+        }
+
+        return $allocations;
+    }
+
+    /**
+     * Aplica un monto a consignaciones abiertas (más antiguas primero).
+     * Incluye entregas del cliente vinculado y, si se pasa, del vendedor.
+     *
+     * @return array{payments: list<ConsignmentPayment>, total: float, allocations: list<array{consignment_id:int, amount:float, number:string}>}
+     */
+    public function applyAmountFifo(?int $customerId, ?int $sellerId, float $amount, array $meta = []): array
+    {
+        $amount = round($amount, 2);
+        if ($amount <= 0.009) {
+            return ['payments' => [], 'total' => 0.0, 'allocations' => []];
+        }
+
+        return DB::transaction(function () use ($customerId, $sellerId, $amount, $meta) {
+            $allocations = $this->planAmountFifo($customerId, $sellerId, $amount);
+
+            if ($allocations === []) {
+                return ['payments' => [], 'total' => 0.0, 'allocations' => []];
+            }
+
+            $payments = [];
+            $total = 0.0;
+            foreach ($allocations as $row) {
+                $consignment = Consignment::query()->lockForUpdate()->findOrFail($row['consignment_id']);
+                $payment = $this->recordPaymentLocked($consignment, [
+                    'amount' => $row['amount'],
+                    'paid_at' => $meta['paid_at'] ?? now(),
+                    'method' => $meta['method'] ?? 'offset',
+                    'notes' => $meta['notes'] ?? null,
+                    'seller_settlement_id' => $meta['seller_settlement_id'] ?? null,
+                ]);
+                $payments[] = $payment;
+                $total += (float) $payment->amount;
+            }
+
+            return [
+                'payments' => $payments,
+                'total' => round($total, 2),
+                'allocations' => $allocations,
+            ];
+        });
+    }
+
+    /**
+     * Revierte pagos creados por una liquidación de vendedor.
+     */
+    public function reverseSellerSettlementPayments(int $sellerSettlementId): int
+    {
+        return DB::transaction(function () use ($sellerSettlementId) {
+            $payments = ConsignmentPayment::query()
+                ->where('seller_settlement_id', $sellerSettlementId)
+                ->lockForUpdate()
+                ->get();
+
+            $count = 0;
+            foreach ($payments as $payment) {
+                $consignmentId = (int) $payment->consignment_id;
+                $payment->delete();
+                $consignment = Consignment::query()->find($consignmentId);
+                if ($consignment) {
+                    $this->recalcTotals($consignment);
+                }
+                $count++;
+            }
+
+            return $count;
+        });
+    }
+
+    /**
+     * @param  array{amount: float|int|string, paid_at?: mixed, method?: string, notes?: ?string}  $data
+     */
+    private function recordPaymentLocked(Consignment $consignment, array $data): ConsignmentPayment
+    {
+        if (! $consignment->canReceivePayment()) {
+            throw new RuntimeException(
+                "La consignación {$consignment->number} no acepta más pagos."
+            );
+        }
+
+        $amount = round((float) $data['amount'], 2);
+        if ($amount <= 0) {
+            throw new InvalidArgumentException('El monto del pago debe ser mayor a 0.');
+        }
+
+        $balance = (float) $consignment->balance_with_vat;
+        if ($amount > $balance + 0.009) {
+            throw new InvalidArgumentException(
+                "El pago de {$consignment->number} no puede superar el saldo adeudado (".money($balance).').'
+            );
+        }
+
+        $payment = ConsignmentPayment::query()->create([
+            'consignment_id' => $consignment->id,
+            'seller_settlement_id' => $data['seller_settlement_id'] ?? null,
+            'paid_at' => $data['paid_at'] ?? now(),
+            'amount' => $amount,
+            'method' => $data['method'] ?? 'cash',
+            'notes' => $data['notes'] ?? null,
+        ]);
+
+        $this->recalcTotals($consignment);
+
+        return $payment;
     }
 
     public function returnItems(Consignment $consignment, array $data): ConsignmentReturn

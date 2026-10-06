@@ -48,11 +48,34 @@
             <select id="customer_id" name="customer_id" data-placeholder="Buscar cliente…">
                 <option value="">— Selecciona —</option>
                 @foreach ($customers as $customer)
-                    <option value="{{ $customer->id }}" @selected(old('customer_id', request('customer_id')) == $customer->id)>
+                    <option
+                        value="{{ $customer->id }}"
+                        data-phone="{{ $customer->normalizedPhone() }}"
+                        @selected(old('customer_id', request('customer_id')) == $customer->id)
+                        @if (isset($returnRiskByCustomer[(string) $customer->id]))
+                            data-has-returns="1"
+                        @endif
+                    >
                         {{ $customer->code }} — {{ $customer->name }}
+                        @if (isset($returnRiskByCustomer[(string) $customer->id]))
+                            · ⚠ devolución
+                        @endif
                     </option>
                 @endforeach
             </select>
+            <div
+                id="return-risk-alert-existing"
+                class="flash"
+                style="display:none;background:#fef2f2;color:#991b1b;border-color:#fecaca;margin-top:.55rem;margin-bottom:0"
+                role="alert"
+            ></div>
+            <div
+                id="open-sale-alert-existing"
+                class="flash"
+                style="display:none;background:#fffbeb;color:#92400e;border-color:#fde68a;margin-top:.55rem;margin-bottom:0"
+                role="alert"
+            ></div>
+            <p id="return-risk-phone-existing" class="muted" style="display:none;margin:.4rem 0 0;font-size:.85rem"></p>
         </div>
 
         <div id="new-customer-panel" class="card" style="margin:0 0 1rem;padding:1rem;background:#f9fafb;@if($customerMode !== 'new') display:none @endif">
@@ -65,6 +88,9 @@
                 'showActive' => false,
                 'compact' => true,
                 'nextCode' => \App\Models\Customer::nextCode(),
+                'phoneAlertId' => 'return-risk-alert-new',
+                'phoneDuplicateAlertId' => 'open-sale-alert-new',
+                'phonePrefillHintId' => 'phone-prefill-hint',
             ])
         </div>
 
@@ -75,13 +101,13 @@
             </div>
             <div class="field">
                 <label for="seller_id">Vendedor *</label>
-                <select id="seller_id" name="seller_id" required>
+                <select id="seller_id" name="seller_id" required data-placeholder="Buscar vendedor…">
                     <option value="">— Selecciona —</option>
                     @forelse ($sellers as $seller)
                         <option
                             value="{{ $seller->id }}"
                             data-next-number="{{ $seller->next_sale_number }}"
-                            @selected(old('seller_id', request('seller_id')) == $seller->id)
+                            @selected(old('seller_id', request('seller_id', auth()->user()->seller_id)) == $seller->id)
                         >
                             {{ $seller->sale_prefix ?: 'V-' }} {{ $seller->code }} — {{ $seller->name }}
                         </option>
@@ -89,6 +115,7 @@
                         <option value="" disabled>No hay vendedores activos</option>
                     @endforelse
                 </select>
+                <p class="muted" style="margin:.35rem 0 0">Puedes cambiar el vendedor antes de guardar; el número de venta se actualiza arriba.</p>
                 @if ($sellers->isEmpty())
                     <p class="muted" style="margin:.35rem 0 0">
                         <a href="{{ route('sales.sellers.create') }}">Crea un vendedor</a> antes de registrar la venta.
@@ -111,7 +138,55 @@
                 <strong>Productos y combos</strong>
                 <button type="button" class="btn btn-secondary" id="add-item-row">Agregar línea</button>
             </div>
-            <p class="muted" style="margin:0 0 1rem">El mismo listado incluye productos y combos. Si eliges un combo, se expanden sus ítems; en la primera línea puedes cambiar el combo o elegir un producto.</p>
+            <p class="muted" style="margin:0 0 1rem">El mismo listado incluye productos y combos. Si eliges un combo, se expanden sus ítems; en la primera línea puedes cambiar el combo, la <strong>cantidad de combos</strong> o elegir un producto.</p>
+
+            @if (($quickPickProducts ?? collect())->isNotEmpty())
+                <div style="margin:0 0 1rem;padding:.85rem 1rem;border:1px dashed #cbd5e1;border-radius:10px;background:#fff">
+                    <div style="display:flex;justify-content:space-between;gap:.75rem;flex-wrap:wrap;align-items:baseline;margin-bottom:.65rem">
+                        <strong style="font-size:.95rem">Acceso rápido</strong>
+                        <span class="muted" style="font-size:.8rem">Favoritos, combos y productos más vendidos. Un clic agrega la línea.</span>
+                    </div>
+                    <div id="quick-picks" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:.5rem">
+                        @foreach ($quickPickProducts as $pick)
+                            @php
+                                $pickStyle = match ($pick->kind) {
+                                    'favorite' => 'border-color:#f59e0b;background:#fffbeb;',
+                                    'combo' => 'border-color:#6366f1;background:#eef2ff;',
+                                    default => '',
+                                };
+                            @endphp
+                            <button
+                                type="button"
+                                class="btn btn-secondary"
+                                data-quick-pick="{{ $pick->value }}"
+                                style="
+                                    display:flex;flex-direction:column;align-items:flex-start;gap:.15rem;
+                                    text-align:left;height:auto;white-space:normal;line-height:1.25;
+                                    padding:.55rem .7rem;font-size:.82rem;
+                                    {{ $pickStyle }}
+                                "
+                            >
+                                <span style="display:flex;align-items:center;gap:.35rem;font-weight:700;flex-wrap:wrap">
+                                    @if ($pick->kind === 'favorite')
+                                        <span aria-hidden="true">★</span>
+                                    @elseif ($pick->kind === 'combo')
+                                        <span style="font-size:.7rem;font-weight:700;color:#4338ca;background:#c7d2fe;border-radius:999px;padding:.1rem .4rem">COMBO</span>
+                                    @else
+                                        <span class="muted" aria-hidden="true">#</span>
+                                    @endif
+                                    {{ $pick->code }}
+                                    @if ($pick->kind === 'top' && $pick->qty_sold)
+                                        <span class="muted" style="font-weight:500;font-size:.75rem">· {{ $pick->qty_sold }} uds</span>
+                                    @elseif ($pick->kind === 'combo' && $pick->qty_sold)
+                                        <span class="muted" style="font-weight:500;font-size:.75rem">· {{ $pick->qty_sold }} ventas</span>
+                                    @endif
+                                </span>
+                                <span style="font-weight:500;color:#334155">{{ $pick->name }}</span>
+                            </button>
+                        @endforeach
+                    </div>
+                </div>
+            @endif
 
             <div id="item-rows">
                 @foreach ($oldItems as $index => $item)
@@ -300,6 +375,12 @@
     const customerPriceTiers = @json($customerPriceTiers ?? []);
     const productPriceDefaults = @json($productPriceDefaults ?? []);
     const comboCatalog = @json($combos ?? []);
+    const returnRiskByCustomer = @json($returnRiskByCustomer ?? []);
+    const returnRiskByPhone = @json($returnRiskByPhone ?? []);
+    const openSalesByCustomer = @json($openSalesByCustomer ?? []);
+    const openSalesByPhone = @json($openSalesByPhone ?? []);
+    const customerPhones = @json($customerPhones ?? []);
+    const customersByPhone = @json($customersByPhone ?? []);
     const rows = document.getElementById('item-rows');
     const template = document.getElementById('item-row-template');
     const shippingInput = document.querySelector('[data-shipping-input]');
@@ -309,12 +390,260 @@
     const carrierCostPreview = document.getElementById('carrier-cost-preview');
     const hasShippingToggle = document.querySelector('[data-has-shipping]');
     const freeShippingNotice = document.getElementById('free-shipping-notice');
+    const returnRiskAlertExisting = document.getElementById('return-risk-alert-existing');
+    const returnRiskAlertNew = document.getElementById('return-risk-alert-new');
+    const openSaleAlertExisting = document.getElementById('open-sale-alert-existing');
+    const openSaleAlertNew = document.getElementById('open-sale-alert-new');
+    const returnRiskPhoneExisting = document.getElementById('return-risk-phone-existing');
+    const phonePrefillHint = document.getElementById('phone-prefill-hint');
     const money = (n) => '$' + Number(n || 0).toFixed(2) + ' USD';
     let shippingManual = false;
+    let lastPrefillPhone = '';
     const hasShippingEnabled = () => !!hasShippingToggle?.checked;
     const existingPanel = document.getElementById('existing-customer-panel');
     const newPanel = document.getElementById('new-customer-panel');
     const customerSelect = document.getElementById('customer_id');
+    const newCustomerPhone = document.getElementById('new_customerphone');
+
+    const normalizePhone = (value) => {
+        const digits = String(value || '').replace(/\D+/g, '');
+        if (!digits) return '';
+        return digits.length >= 8 ? digits.slice(-8) : digits;
+    };
+
+    const setFieldValue = (id, value) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.value = value ?? '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+
+    const prefillNewCustomerFromPhone = () => {
+        const mode = document.querySelector('[data-customer-mode]:checked')?.value || 'new';
+        if (mode !== 'new') {
+            if (phonePrefillHint) {
+                phonePrefillHint.style.display = 'none';
+                phonePrefillHint.textContent = '';
+            }
+            return;
+        }
+
+        const phone = normalizePhone(newCustomerPhone?.value);
+        if (!phone || phone.length < 8) {
+            lastPrefillPhone = '';
+            if (phonePrefillHint) {
+                phonePrefillHint.style.display = 'none';
+                phonePrefillHint.textContent = '';
+            }
+            return;
+        }
+
+        const match = customersByPhone[phone];
+        if (!match) {
+            lastPrefillPhone = '';
+            if (phonePrefillHint) {
+                phonePrefillHint.style.display = 'none';
+                phonePrefillHint.textContent = '';
+            }
+            return;
+        }
+
+        if (lastPrefillPhone === phone) {
+            return;
+        }
+        lastPrefillPhone = phone;
+
+        setFieldValue('new_customername', match.name || '');
+        const nameInput = document.getElementById('new_customername');
+        if (nameInput) nameInput.dataset.userEdited = '1';
+
+        setFieldValue('new_customerdocument_type', match.document_type || 'N/A');
+        const docType = document.querySelector('#new-customer-panel [data-document-type]');
+        if (docType) docType.dataset.userEdited = '1';
+        window.syncCustomerDocumentFields?.();
+        if ((match.document_type || 'N/A') !== 'N/A') {
+            setFieldValue('new_customerdocument_number', match.document_number || '');
+        }
+
+        setFieldValue('new_customeremail', match.email || '');
+        setFieldValue('new_customeraddress', match.address || '');
+        setFieldValue('new_customercountry', match.country || 'El Salvador');
+        setFieldValue('new_customernotes', match.notes || '');
+
+        const geoRoot = document.querySelector('#new-customer-panel [data-geo-root]');
+        if (window.setSvGeoValues && geoRoot) {
+            window.setSvGeoValues(geoRoot, match.department || '', match.municipality || '');
+            // Si el cliente tenía CP manual distinto, respétalo después del sync geo.
+            if (match.postal_code) {
+                const postal = document.getElementById('new_customerpostal_code');
+                if (postal) {
+                    postal.value = match.postal_code;
+                    postal.dataset.manual = '1';
+                }
+            }
+        } else {
+            setFieldValue('new_customerpostal_code', match.postal_code || '');
+        }
+
+        if (phonePrefillHint) {
+            phonePrefillHint.style.display = '';
+            phonePrefillHint.textContent = `Datos cargados de ${match.code} — ${match.name}. Sigues creando cliente nuevo; edita la dirección si cambió.`;
+        }
+    };
+
+    const setAlert = (el, message) => {
+        if (!el) return;
+        if (!message) {
+            el.style.display = 'none';
+            el.textContent = '';
+            return;
+        }
+        el.style.display = '';
+        el.textContent = message;
+    };
+
+    const formatOpenSaleLine = (sale) => {
+        const parts = [
+            sale.number || '—',
+            sale.status_label || sale.status || '',
+            sale.sold_at || '',
+            sale.total != null ? money(sale.total) : '',
+        ].filter(Boolean);
+        return parts.join(' · ');
+    };
+
+    const openSaleMessage = (bucket, includeCustomer = false) => {
+        if (!bucket || !bucket.count) return '';
+        const sales = bucket.sales || [];
+        const first = sales[0];
+        let msg = `⚠ Posible venta duplicada: ya hay ${bucket.count} pedido(s) abierto(s) (confirmada / en ruta)`;
+        if (includeCustomer && first?.customer) {
+            msg += ` de ${first.customer}`;
+        }
+        msg += '.';
+        if (first) {
+            msg += ` Más reciente: ${formatOpenSaleLine(first)}.`;
+        }
+        if (sales.length > 1) {
+            msg += ` Otras: ${sales.slice(1, 3).map((s) => s.number).join(', ')}.`;
+        }
+        msg += ' Revisa antes de crear otra.';
+        return msg;
+    };
+
+    const showReturnRisk = (message, mode) => {
+        if (mode === 'existing') {
+            setAlert(returnRiskAlertExisting, message);
+            setAlert(returnRiskAlertNew, '');
+        } else {
+            setAlert(returnRiskAlertNew, message);
+            setAlert(returnRiskAlertExisting, '');
+            if (returnRiskPhoneExisting) {
+                returnRiskPhoneExisting.style.display = 'none';
+                returnRiskPhoneExisting.textContent = '';
+            }
+        }
+    };
+
+    const showOpenSaleAlert = (message, mode) => {
+        if (mode === 'existing') {
+            setAlert(openSaleAlertExisting, message);
+            setAlert(openSaleAlertNew, '');
+        } else {
+            setAlert(openSaleAlertNew, message);
+            setAlert(openSaleAlertExisting, '');
+        }
+    };
+
+    const checkOpenSales = () => {
+        const mode = document.querySelector('[data-customer-mode]:checked')?.value || 'new';
+        if (mode === 'existing') {
+            const id = customerSelect?.value ? String(customerSelect.value) : '';
+            if (!id) {
+                showOpenSaleAlert('', 'existing');
+                return;
+            }
+            const byId = openSalesByCustomer[id];
+            const phone = customerPhones[id] || customerSelect?.selectedOptions?.[0]?.dataset?.phone || '';
+            const byPhone = phone ? openSalesByPhone[phone] : null;
+
+            if (byId) {
+                showOpenSaleAlert(openSaleMessage(byId), 'existing');
+                return;
+            }
+            if (byPhone) {
+                showOpenSaleAlert(openSaleMessage(byPhone, true), 'existing');
+                return;
+            }
+            showOpenSaleAlert('', 'existing');
+            return;
+        }
+
+        const phone = normalizePhone(newCustomerPhone?.value);
+        if (!phone || phone.length < 8) {
+            showOpenSaleAlert('', 'new');
+            return;
+        }
+        const byPhone = openSalesByPhone[phone];
+        showOpenSaleAlert(byPhone ? openSaleMessage(byPhone, true) : '', 'new');
+    };
+
+    const checkReturnRisk = () => {
+        const mode = document.querySelector('[data-customer-mode]:checked')?.value || 'new';
+        if (mode === 'existing') {
+            const id = customerSelect?.value ? String(customerSelect.value) : '';
+            if (!id) {
+                showReturnRisk('', 'existing');
+                if (returnRiskPhoneExisting) {
+                    returnRiskPhoneExisting.style.display = 'none';
+                    returnRiskPhoneExisting.textContent = '';
+                }
+                return;
+            }
+            const byId = returnRiskByCustomer[id];
+            const phone = customerPhones[id] || customerSelect?.selectedOptions?.[0]?.dataset?.phone || '';
+            const byPhone = phone ? returnRiskByPhone[phone] : null;
+            if (returnRiskPhoneExisting) {
+                if (phone) {
+                    returnRiskPhoneExisting.style.display = '';
+                    returnRiskPhoneExisting.textContent = 'Teléfono: ' + phone + (byPhone || byId ? ' · historial de devolución' : '');
+                } else {
+                    returnRiskPhoneExisting.style.display = 'none';
+                    returnRiskPhoneExisting.textContent = '';
+                }
+            }
+            if (byId) {
+                let msg = `⚠ Cliente con historial de devoluciones (${byId.count}). Última: ${byId.last_number || '—'} (${byId.last_at || '—'}).`;
+                if (byPhone && byPhone.count > byId.count) {
+                    msg += ` También hay ${byPhone.count} devolución(es) con el mismo teléfono.`;
+                }
+                msg += ' Revisa riesgo antes de COD.';
+                showReturnRisk(msg, 'existing');
+                return;
+            }
+            if (byPhone) {
+                showReturnRisk(`⚠ Este teléfono ya tuvo ${byPhone.count} devolución(es) (última ${byPhone.last_number || '—'} · ${byPhone.last_at || '—'}). Revisa riesgo antes de COD.`, 'existing');
+                return;
+            }
+            showReturnRisk('', 'existing');
+            return;
+        }
+
+        const phone = normalizePhone(newCustomerPhone?.value);
+        const byPhone = phone ? returnRiskByPhone[phone] : null;
+        if (byPhone) {
+            const names = (byPhone.names || []).slice(0, 2).join(', ');
+            showReturnRisk(`⚠ Este teléfono ya tuvo ${byPhone.count} devolución(es)${names ? ' (' + names + ')' : ''}. Última: ${byPhone.last_number || '—'} (${byPhone.last_at || '—'}). Revisa riesgo antes de COD.`, 'new');
+            return;
+        }
+        showReturnRisk('', 'new');
+    };
+
+    const checkPhoneAlerts = () => {
+        checkReturnRisk();
+        checkOpenSales();
+    };
 
     const currentCustomerId = () => {
         const mode = document.querySelector('[data-customer-mode]:checked')?.value || 'new';
@@ -322,7 +651,6 @@
         const id = customerSelect?.value;
         return id ? String(id) : null;
     };
-
     const resolvePrice = (productId, qty, productSelect = null) => {
         const pid = String(productId || '');
         const quantity = Math.max(1, Number(qty) || 1);
@@ -434,6 +762,7 @@
         }
         applyAllRowPrices(true);
         recalc();
+        checkPhoneAlerts();
     };
 
     document.querySelectorAll('[data-customer-mode]').forEach((el) => {
@@ -448,8 +777,17 @@
     customerSelect?.addEventListener('change', () => {
         applyAllRowPrices(true);
         recalc();
+        checkPhoneAlerts();
     });
-
+    newCustomerPhone?.addEventListener('input', () => {
+        checkPhoneAlerts();
+        prefillNewCustomerFromPhone();
+    });
+    newCustomerPhone?.addEventListener('change', () => {
+        checkPhoneAlerts();
+        prefillNewCustomerFromPhone();
+    });
+    newCustomerPhone?.addEventListener('blur', prefillNewCustomerFromPhone);
     const nextSaleNumberEl = document.getElementById('next-sale-number');
     const sellerSelect = document.getElementById('seller_id');
     const syncNextSaleNumber = () => {
@@ -462,7 +800,9 @@
     syncNextSaleNumber();
 
     const lineNetWithVat = (row) => {
-        const qty = Number(row.querySelector('[data-qty]')?.value || 0);
+        const qtyInput = row.querySelector('[data-qty]');
+        const realQty = row.querySelector('[data-combo-real-qty]');
+        const qty = Number(realQty?.value || qtyInput?.value || 0);
         const priceWithVat = Number(row.querySelector('[data-price-input]')?.value || 0);
         const discPct = Number(row.querySelector('[data-disc-pct]')?.value || 0);
         const discAmt = Number(row.querySelector('[data-disc-amt]')?.value || 0);
@@ -627,11 +967,33 @@
             appendComboRow(line, combo.id, label, groupId, {
                 isPicker: index === 0,
                 insertBefore: anchor,
+                comboQty,
             });
         });
         reindex();
         syncShippingFromProducts(true);
         recalc();
+    };
+
+    const rebuildComboGroup = (groupId, comboQty) => {
+        const groupRows = [...rows.querySelectorAll(`[data-row][data-combo-group="${groupId}"]`)];
+        if (!groupRows.length) return;
+        const comboId = groupRows[0].dataset.comboId;
+        const combo = comboCatalog.find((c) => String(c.id) === String(comboId));
+        if (!combo) return;
+
+        const qty = Math.max(1, Number(comboQty) || 1);
+        if (qty > Number(combo.stock || 0) && !combo.on_demand) {
+            if (!confirm(`Solo hay stock para ${combo.stock} combo(s). ¿Continuar?`)) {
+                const pickerQty = groupRows[0].querySelector('[data-qty]');
+                if (pickerQty) pickerQty.value = groupRows[0].dataset.comboQty || '1';
+                return;
+            }
+        }
+
+        const anchor = removeComboGroup(groupId);
+        const temp = insertBlankRowAt(anchor);
+        expandComboSelection(temp, combo, qty);
     };
 
     const onProductChanged = (select) => {
@@ -702,6 +1064,44 @@
         reindex();
     });
 
+    const setCatalogValueOnRow = (row, catalogValue) => {
+        const select = row?.querySelector('[data-product]');
+        if (!select || select.disabled) return false;
+        const value = String(catalogValue);
+        if (select.tomselect) {
+            select.tomselect.setValue(value, false);
+        } else {
+            select.value = value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            select.dispatchEvent(new CustomEvent('searchable:change', { bubbles: true }));
+        }
+        return true;
+    };
+
+    const quickAddCatalogItem = (catalogValue) => {
+        if (!catalogValue || !rows || !template) return;
+
+        const emptyRow = [...rows.querySelectorAll('[data-row]')].find((row) => {
+            const select = row.querySelector('[data-product]');
+            return select && !select.disabled && !select.value && !row.dataset.comboId;
+        });
+
+        if (emptyRow) {
+            setCatalogValueOnRow(emptyRow, catalogValue);
+            return;
+        }
+
+        document.getElementById('add-item-row')?.click();
+        const newRow = rows.querySelector('[data-row]:last-child');
+        requestAnimationFrame(() => setCatalogValueOnRow(newRow, catalogValue));
+    };
+
+    document.getElementById('quick-picks')?.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-quick-pick]');
+        if (!btn) return;
+        quickAddCatalogItem(btn.dataset.quickPick);
+    });
+
     const allocateComboLines = (combo, comboQty) => {
         const components = combo.items || [];
         if (!components.length) return [];
@@ -751,7 +1151,7 @@
     };
 
     const appendComboRow = (line, comboId, comboLabel, groupId, options = {}) => {
-        const { isPicker = false, insertBefore = null } = options;
+        const { isPicker = false, insertBefore = null, comboQty = 1 } = options;
         const index = rows.querySelectorAll('[data-row]').length;
         const html = template.innerHTML.replaceAll('__INDEX__', String(index));
         if (insertBefore) {
@@ -765,6 +1165,8 @@
 
         row.dataset.comboId = String(comboId);
         row.dataset.comboGroup = String(groupId);
+        row.dataset.comboQty = String(Math.max(1, Number(comboQty) || 1));
+        row.dataset.componentQty = String(Math.max(1, Math.round(Number(line.quantity) / Math.max(1, Number(comboQty) || 1))));
         row.dataset.freeShipping = line.free_shipping === '1' ? '1' : '0';
 
         const comboHidden = document.createElement('input');
@@ -812,8 +1214,32 @@
         }
 
         const qty = row.querySelector('[data-qty]');
-        qty.value = line.quantity;
-        qty.readOnly = true;
+        const qtyLabel = qty?.closest('.field')?.querySelector('label');
+        if (isPicker) {
+            // Cantidad de combos (editable); al guardar se envía la cantidad del componente.
+            qty.dataset.comboQtyInput = '1';
+            qty.value = String(Math.max(1, Number(comboQty) || 1));
+            qty.readOnly = false;
+            if (qtyLabel) qtyLabel.textContent = 'Cant. combos';
+            const qtyNote = document.createElement('p');
+            qtyNote.className = 'muted';
+            qtyNote.style.cssText = 'margin:.25rem 0 0;font-size:.78rem';
+            qtyNote.textContent = `×${row.dataset.componentQty} en esta línea al guardar`;
+            qty.closest('.field')?.appendChild(qtyNote);
+
+            // Cantidad real del producto (oculta) para el POST.
+            const realQty = document.createElement('input');
+            realQty.type = 'hidden';
+            realQty.name = qty.name;
+            realQty.value = String(line.quantity);
+            realQty.dataset.comboRealQty = '1';
+            qty.removeAttribute('name');
+            qty.insertAdjacentElement('afterend', realQty);
+        } else {
+            qty.value = line.quantity;
+            qty.readOnly = true;
+            if (qtyLabel) qtyLabel.textContent = 'Cantidad';
+        }
 
         const price = row.querySelector('[data-price-input]');
         price.value = Number(line.unit_price_with_vat).toFixed(2);
@@ -861,12 +1287,20 @@
     });
     rows?.addEventListener('change', (e) => {
         if (e.target.matches('[data-qty]')) {
-            applyRowPrice(e.target.closest('[data-row]'), false);
+            const row = e.target.closest('[data-row]');
+            if (e.target.dataset.comboQtyInput === '1' && row?.dataset?.comboGroup) {
+                rebuildComboGroup(row.dataset.comboGroup, e.target.value);
+                return;
+            }
+            applyRowPrice(row, false);
             recalc();
         }
     });
     rows?.addEventListener('input', (e) => {
         if (e.target.matches('[data-qty]')) {
+            if (e.target.dataset.comboQtyInput === '1') {
+                return;
+            }
             applyRowPrice(e.target.closest('[data-row]'), false);
         }
         if (e.target.matches('[data-price-input]')) {

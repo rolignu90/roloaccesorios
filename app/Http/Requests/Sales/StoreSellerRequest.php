@@ -28,6 +28,15 @@ class StoreSellerRequest extends FormRequest
             'email' => ['nullable', 'email', 'max:255'],
             'notes' => ['nullable', 'string'],
             'is_active' => ['sometimes', 'boolean'],
+            'type' => ['required', Rule::in([Seller::TYPE_EXTERNAL, Seller::TYPE_INTERNAL])],
+            'salary_amount' => ['nullable', 'numeric', 'min:0'],
+            'commission_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'customer_id' => [
+                'nullable',
+                'integer',
+                'exists:customers,id',
+                Rule::unique('sellers', 'customer_id'),
+            ],
         ];
     }
 
@@ -37,6 +46,8 @@ class StoreSellerRequest extends FormRequest
             'sale_prefix.required' => 'Indica el prefijo de las ventas de este vendedor (ej. M-).',
             'sale_prefix.regex' => 'El prefijo solo puede tener letras/números (ej. M o M-).',
             'sale_prefix.unique' => 'Ese prefijo ya lo usa otro vendedor.',
+            'type.required' => 'Indica si el vendedor es interno o externo.',
+            'customer_id.unique' => 'Ese cliente ya está vinculado a otro vendedor.',
         ];
     }
 
@@ -49,6 +60,10 @@ class StoreSellerRequest extends FormRequest
             'phone' => trim((string) $this->input('phone')) ?: null,
             'email' => trim((string) $this->input('email')) ?: null,
             'notes' => trim((string) $this->input('notes')) ?: null,
+            'type' => $this->input('type', Seller::TYPE_EXTERNAL),
+            'salary_amount' => $this->filled('salary_amount') ? $this->input('salary_amount') : null,
+            'commission_percent' => $this->filled('commission_percent') ? $this->input('commission_percent') : null,
+            'customer_id' => $this->filled('customer_id') ? $this->input('customer_id') : null,
         ]);
     }
 }

@@ -49,8 +49,13 @@
             <input type="checkbox" name="on_demand" value="1" @checked(old('on_demand', $product?->on_demand ?? false))>
             On demand (vender sin stock)
         </label>
+        <input type="hidden" name="is_favorite" value="0">
+        <label>
+            <input type="checkbox" name="is_favorite" value="1" @checked(old('is_favorite', $product?->is_favorite ?? false))>
+            Favorito (acceso rápido en ventas)
+        </label>
     </div>
-    <p class="muted" style="margin:.35rem 0 0;width:100%">Si hay stock, primero se agota FIFO; solo lo que falte queda como on demand (para comprar).</p>
+    <p class="muted" style="margin:.35rem 0 0;width:100%">Si hay stock, primero se agota FIFO; solo lo que falte queda como on demand (para comprar). Los favoritos aparecen como botones al crear una venta.</p>
 </div>
 <div class="grid-3">
     <div class="field">

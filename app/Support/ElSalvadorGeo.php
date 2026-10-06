@@ -71,7 +71,36 @@ class ElSalvadorGeo
             return false;
         }
 
-        return in_array($municipality, self::municipalityNames($department), true);
+        $names = self::municipalityNames($department);
+        if (in_array($municipality, $names, true)) {
+            return true;
+        }
+
+        // Typo histórico en catálogo / datos: Lilisque → Lislique
+        if ($municipality === 'Lilisque' && in_array('Lislique', $names, true)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Corrige typos conocidos hacia el nombre canónico del catálogo.
+     */
+    public static function canonicalizeMunicipality(?string $department, ?string $municipality): ?string
+    {
+        if (! filled($municipality)) {
+            return $municipality;
+        }
+
+        if ($municipality === 'Lilisque'
+            && filled($department)
+            && in_array('Lislique', self::municipalityNames($department), true)
+        ) {
+            return 'Lislique';
+        }
+
+        return $municipality;
     }
 
     public static function postalCodeFor(?string $department, ?string $municipality): ?string

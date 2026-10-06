@@ -26,6 +26,7 @@ class Product extends Model
         'is_active',
         'free_shipping',
         'on_demand',
+        'is_favorite',
     ];
 
     public const PROMO_AMOUNT = 'amount';
@@ -44,6 +45,7 @@ class Product extends Model
             'is_active' => 'boolean',
             'free_shipping' => 'boolean',
             'on_demand' => 'boolean',
+            'is_favorite' => 'boolean',
         ];
     }
 

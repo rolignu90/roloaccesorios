@@ -4,11 +4,21 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Seller extends Model
 {
     use HasFactory;
+
+    public const TYPE_EXTERNAL = 'external';
+
+    public const TYPE_INTERNAL = 'internal';
+
+    public const TYPE_LABELS = [
+        self::TYPE_EXTERNAL => 'Externo',
+        self::TYPE_INTERNAL => 'Interno',
+    ];
 
     protected $fillable = [
         'code',
@@ -18,18 +28,49 @@ class Seller extends Model
         'email',
         'notes',
         'is_active',
+        'type',
+        'salary_amount',
+        'commission_percent',
+        'customer_id',
     ];
 
     protected function casts(): array
     {
         return [
             'is_active' => 'boolean',
+            'salary_amount' => 'decimal:2',
+            'commission_percent' => 'decimal:2',
         ];
     }
 
     public function sales(): HasMany
     {
         return $this->hasMany(Sale::class);
+    }
+
+    public function settlements(): HasMany
+    {
+        return $this->hasMany(SellerSettlement::class);
+    }
+
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(Customer::class);
+    }
+
+    public function isExternal(): bool
+    {
+        return $this->type === self::TYPE_EXTERNAL;
+    }
+
+    public function isInternal(): bool
+    {
+        return $this->type === self::TYPE_INTERNAL;
+    }
+
+    public function typeLabel(): string
+    {
+        return self::TYPE_LABELS[$this->type] ?? (string) $this->type;
     }
 
     public static function nextCode(): string

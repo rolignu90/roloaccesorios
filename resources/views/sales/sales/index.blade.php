@@ -9,13 +9,22 @@
         <p class="muted">Ventas con IVA, descuentos y descuento FIFO</p>
     </div>
     <div class="actions">
-        <a class="btn" href="{{ route('sales.sales.create') }}">Nueva venta</a>
+        @can('pos.sell')<a class="btn btn-secondary" href="{{ route('store.pos') }}">Punto de venta</a>@endcan
+        @can('sales.create')<a class="btn" href="{{ route('sales.sales.create') }}">Nueva venta en línea</a>@endcan
     </div>
 </div>
 
-@if ($errors->has('export') || $errors->has('sistrack') || $errors->has('status'))
+@php $currentChannel = array_key_exists((string) request('channel'), \App\Models\Sale::CHANNEL_LABELS) ? request('channel') : ''; @endphp
+<nav class="section-tabs" aria-label="Canal">
+    <a href="{{ route('sales.sales.index', request()->except(['channel', 'store_id', 'page'])) }}" class="{{ $currentChannel === '' ? 'active' : '' }}">Todas</a>
+    @foreach (\App\Models\Sale::CHANNEL_LABELS as $value => $label)
+        <a href="{{ route('sales.sales.index', array_merge(request()->except(['channel', 'store_id', 'page']), ['channel' => $value])) }}" class="{{ $currentChannel === $value ? 'active' : '' }}">{{ $label }}</a>
+    @endforeach
+</nav>
+
+@if ($errors->any())
     <div class="flash" style="background:#fef2f2;color:#991b1b;border-color:#fecaca;margin-bottom:1rem">
-        {{ $errors->first('export') ?: ($errors->first('sistrack') ?: $errors->first('status')) }}
+        {{ $errors->first() }}
     </div>
 @endif
 
@@ -51,7 +60,7 @@
 @endif
 
 <div class="card" style="margin-bottom:1rem">
-    <form class="search" method="GET" action="{{ route('sales.sales.index') }}" style="flex-wrap:wrap">
+    <form class="search" method="GET" action="{{ route('sales.sales.index') }}" style="flex-wrap:wrap" id="sales-filter-form">
         <input type="text" name="q" value="{{ request('q') }}" placeholder="Número, cliente o vendedor">
         <input type="date" name="from" value="{{ request('from') }}">
         <input type="date" name="to" value="{{ request('to') }}">
@@ -80,8 +89,29 @@
         @if (request()->boolean('pending_sync'))
             <input type="hidden" name="pending_sync" value="1">
         @endif
+        @if ($currentChannel !== '')
+            <input type="hidden" name="channel" value="{{ $currentChannel }}">
+        @endif
+        @if ($currentChannel === \App\Models\Sale::CHANNEL_STORE && $stores->count() > 1)
+            <select name="store_id">
+                <option value="">Todas las tiendas</option>
+                @foreach ($stores as $store)
+                    <option value="{{ $store->id }}" @selected((string) request('store_id') === (string) $store->id)>{{ $store->name }}</option>
+                @endforeach
+            </select>
+        @endif
         <button class="btn" type="submit">Filtrar</button>
+        <button
+            class="btn btn-secondary"
+            type="button"
+            id="export-report-btn"
+            data-url="{{ route('sales.sales.export-report') }}"
+        >Exportar reporte CSV</button>
     </form>
+    <p class="muted" style="margin:.5rem 0 0">
+        El reporte usa los mismos filtros: vendedor, cliente, productos comprados, costo (COGS) y ganancia.
+        Sin estado elegido se excluyen anuladas.
+    </p>
 </div>
 
 <div class="card" style="margin-bottom:1rem">
@@ -126,8 +156,10 @@
                 @if (request()->boolean('stuck_in_transit'))
                     <button class="btn" type="submit" formaction="{{ route('sales.sales.mark-delivered') }}" id="mark-delivered-btn" disabled
                         onclick="return confirm('¿Marcar como entregadas las ventas seleccionadas?')">Marcar entregadas</button>
+                    <button class="btn btn-secondary" type="submit" formaction="{{ route('sales.sales.mark-returned') }}" id="mark-returned-btn" disabled
+                        onclick="return confirm('¿Marcar como devolución las ventas seleccionadas?\n\nSe reingresa stock (producto devuelto).')">Marcar devolución</button>
                     <button class="btn btn-danger" type="submit" formaction="{{ route('sales.sales.void-many') }}" id="void-many-btn" disabled
-                        onclick="return confirm('¿Anular las ventas seleccionadas y restaurar stock?')">Anular</button>
+                        onclick="return confirm('¿Anular las ventas seleccionadas?\n\nPedido sin ciclo cerrado; se restaura stock.')">Anular</button>
                 @endif
             </div>
         </div>
@@ -238,6 +270,21 @@
 
 <script>
 (() => {
+    const reportBtn = document.getElementById('export-report-btn');
+    reportBtn?.addEventListener('click', () => {
+        const filterForm = document.getElementById('sales-filter-form');
+        const base = reportBtn.dataset.url;
+        if (!filterForm || !base) return;
+
+        const url = new URL(base, window.location.origin);
+        new FormData(filterForm).forEach((value, key) => {
+            if (String(value).trim() !== '') {
+                url.searchParams.set(key, String(value));
+            }
+        });
+        window.location.href = url.toString();
+    });
+
     const form = document.getElementById('export-selected-form');
     const tbody = document.getElementById('sales-infinite-body');
     const statusEl = document.getElementById('sales-infinite-status');
@@ -251,6 +298,7 @@
     const sistrackBtn = document.getElementById('sistrack-selected-btn');
     const syncBtn = document.getElementById('sistrack-sync-btn');
     const markDeliveredBtn = document.getElementById('mark-delivered-btn');
+    const markReturnedBtn = document.getElementById('mark-returned-btn');
     const voidManyBtn = document.getElementById('void-many-btn');
     const selectAll = document.getElementById('select-all-exportable');
     const csrf = form?.querySelector('input[name="_token"]')?.value || '';
@@ -266,8 +314,30 @@
     let nextUrl = tbody?.dataset.nextUrl || '';
     let sending = false;
 
-    const loadedCount = () => tbody ? tbody.querySelectorAll('tr:not([data-empty-row])').length : 0;
+    const loadedCount = () => tbody ? tbody.querySelectorAll('tr[data-sale-row]').length : 0;
     const totalCount = () => Number(tbody?.dataset.total || 0);
+
+    tbody?.addEventListener('click', (event) => {
+        const btn = event.target.closest('[data-sale-items-toggle]');
+        if (!btn || !tbody.contains(btn)) return;
+
+        const targetId = btn.getAttribute('data-target');
+        const panel = targetId ? document.getElementById(targetId) : null;
+        if (!panel) return;
+
+        const open = panel.hasAttribute('hidden');
+        if (open) {
+            panel.removeAttribute('hidden');
+            btn.setAttribute('aria-expanded', 'true');
+            const label = btn.querySelector('[data-toggle-label]');
+            if (label) label.textContent = '▾';
+        } else {
+            panel.setAttribute('hidden', '');
+            btn.setAttribute('aria-expanded', 'false');
+            const label = btn.querySelector('[data-toggle-label]');
+            if (label) label.textContent = '▸';
+        }
+    });
 
     const syncStatus = () => {
         if (!statusEl) return;
@@ -296,6 +366,7 @@
             syncBtn.disabled = pending === 0 || sending;
         }
         if (markDeliveredBtn) markDeliveredBtn.disabled = stuckSelected === 0 || sending;
+        if (markReturnedBtn) markReturnedBtn.disabled = stuckSelected === 0 || sending;
         if (voidManyBtn) voidManyBtn.disabled = stuckSelected === 0 || sending;
         if (selectAll) {
             selectAll.checked = total > 0 && selected === total;

@@ -10,4 +10,8 @@ return [
         'credit' => 'Crédito',
         'other' => 'Otro',
     ],
+    'store' => [
+        'walk_in_customer_name' => 'Consumidor final',
+        'payment_methods' => ['cash', 'card', 'transfer'],
+    ],
 ];

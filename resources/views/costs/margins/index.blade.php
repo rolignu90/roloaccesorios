@@ -5,13 +5,17 @@
 @section('content')
 <div class="topbar">
     <div>
-        <h1>Márgenes detallados</h1>
+        <h1>Contabilidad · Márgenes detallados</h1>
         <p class="muted">Por venta y por producto. El margen real descuenta costo de courier y comisión COD (p. ej. envío gratis).</p>
     </div>
-    <a class="btn btn-secondary" href="{{ route('costs.dashboard') }}">Dashboard</a>
+    <div class="actions">
+        <a class="btn btn-secondary" href="{{ route('accounting.dashboard') }}">Resumen</a>
+        <a class="btn btn-secondary" href="{{ route('costs.dashboard') }}">Resultado</a>
+    </div>
 </div>
 
 <div class="card" style="margin-bottom:1rem">
+    @include('accounting._periods')
     <form class="search" method="GET" action="{{ route('costs.margins') }}">
         <input type="date" name="from" value="{{ $from->toDateString() }}">
         <input type="date" name="to" value="{{ $to->toDateString() }}">

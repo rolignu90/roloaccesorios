@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\QueryException;
 use RuntimeException;
 
@@ -40,9 +41,43 @@ class Customer extends Model
         return $this->hasMany(Sale::class);
     }
 
+    public function returnedSales(): HasMany
+    {
+        return $this->hasMany(Sale::class)->where('status', Sale::STATUS_RETURNED);
+    }
+
+    /** Normaliza teléfono SV a últimos 8 dígitos para comparar. */
+    public static function normalizePhone(?string $phone): ?string
+    {
+        $digits = preg_replace('/\D+/', '', (string) $phone) ?: '';
+        if ($digits === '') {
+            return null;
+        }
+
+        return strlen($digits) >= 8 ? substr($digits, -8) : $digits;
+    }
+
+    public function normalizedPhone(): ?string
+    {
+        return static::normalizePhone($this->phone);
+    }
+
+    /**
+     * Clientes con al menos una venta en devolución.
+     */
+    public function scopeWithReturns($query)
+    {
+        return $query->whereHas('sales', fn ($q) => $q->where('status', Sale::STATUS_RETURNED));
+    }
+
     public function productPriceTiers(): HasMany
     {
         return $this->hasMany(CustomerProductPriceTier::class);
+    }
+
+    public function linkedSeller(): HasOne
+    {
+        return $this->hasOne(Seller::class);
     }
 
     public static function nextCode(): string

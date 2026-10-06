@@ -64,6 +64,11 @@
                     </td>
                     <td class="actions">
                         <a href="{{ route('inventory.combos.edit', $combo) }}">Editar</a>
+                        ·
+                        <form method="POST" action="{{ route('inventory.combos.duplicate', $combo) }}" style="display:inline">
+                            @csrf
+                            <button type="submit" class="btn-link" style="border:0;background:transparent;cursor:pointer;padding:0;font:inherit;color:inherit">Duplicar</button>
+                        </form>
                     </td>
                 </tr>
             @empty

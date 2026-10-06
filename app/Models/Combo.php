@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 
 class Combo extends Model
 {
@@ -212,5 +213,60 @@ class Combo extends Model
                 'quantity' => $quantity,
             ]);
         }
+    }
+
+    public function duplicate(): self
+    {
+        $this->loadMissing('items');
+
+        return DB::transaction(function () {
+            $copy = static::query()->create([
+                'code' => $this->nextDuplicateCode(),
+                'name' => $this->nextDuplicateName(),
+                'description' => $this->description,
+                'sale_price_without_vat' => $this->sale_price_without_vat,
+                'is_active' => true,
+                'free_shipping' => (bool) $this->free_shipping,
+            ]);
+
+            $copy->syncItems(
+                $this->items->map(fn (ComboItem $item) => [
+                    'product_id' => $item->product_id,
+                    'quantity' => $item->quantity,
+                ])->all()
+            );
+
+            return $copy->fresh(['items.product']);
+        });
+    }
+
+    private function nextDuplicateCode(): string
+    {
+        $base = strtoupper(trim((string) $this->code));
+        $base = preg_replace('/-COPIA(-\d+)?$/', '', $base) ?: $base;
+        $candidate = $base.'-COPIA';
+        $n = 2;
+
+        while (static::query()->where('code', $candidate)->exists()) {
+            $candidate = $base.'-COPIA-'.$n;
+            $n++;
+        }
+
+        return $candidate;
+    }
+
+    private function nextDuplicateName(): string
+    {
+        $base = trim((string) $this->name);
+        $base = preg_replace('/\s*\(copia( \d+)?\)$/i', '', $base) ?: $base;
+        $candidate = $base.' (copia)';
+        $n = 2;
+
+        while (static::query()->where('name', $candidate)->exists()) {
+            $candidate = $base.' (copia '.$n.')';
+            $n++;
+        }
+
+        return $candidate;
     }
 }

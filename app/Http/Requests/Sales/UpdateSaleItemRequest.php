@@ -15,6 +15,17 @@ class UpdateSaleItemRequest extends FormRequest
     {
         return [
             'quantity' => ['required', 'integer', 'min:0'],
+            'unit_price_with_vat' => ['required', 'numeric', 'min:0'],
+            'discount_percent' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'discount_amount' => ['nullable', 'numeric', 'min:0'],
         ];
+    }
+
+    protected function prepareForValidation(): void
+    {
+        $this->merge([
+            'discount_percent' => $this->input('discount_percent', 0),
+            'discount_amount' => $this->input('discount_amount', 0),
+        ]);
     }
 }

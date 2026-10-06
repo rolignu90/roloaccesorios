@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\ShippingCarrier;
+use Carbon\Carbon;
 use GuzzleHttp\Cookie\CookieJar;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
@@ -152,6 +153,21 @@ class SistrackClient
         return $response;
     }
 
+    public function novaPut(string $path, array $payload): Response
+    {
+        $this->ensureSession();
+
+        $response = $this->http()
+            ->acceptJson()
+            ->asJson()
+            ->withHeaders($this->novaHeaders())
+            ->put($this->baseUrl().$path, $payload);
+
+        $this->captureXsrfFromJar();
+
+        return $response;
+    }
+
     /**
      * @return list<array{id: int|string, order_id: ?string}>
      */
@@ -286,7 +302,7 @@ class SistrackClient
         }
 
         try {
-            $base = \Carbon\Carbon::createFromFormat('Ymd', $m[1])->startOfDay();
+            $base = Carbon::createFromFormat('Ymd', $m[1])->startOfDay();
         } catch (\Throwable) {
             return [];
         }
@@ -411,6 +427,21 @@ class SistrackClient
         return ['id' => $id, 'fields' => $payload];
     }
 
+    /**
+     * @param  array<string, mixed>  $payload
+     * @return array{id: int|string, fields: array<string, mixed>}
+     */
+    public function updateRecipient(string $id, array $payload): array
+    {
+        $response = $this->novaPut('/nova-api/recipients/'.$id, $payload);
+        if (! $response->successful()) {
+            // Algunas instalaciones Nova aceptan POST a update; reintentar no — fallar claro.
+            throw new RuntimeException($this->formatNovaError('No se pudo actualizar destinatario #'.$id, $response));
+        }
+
+        return ['id' => $id, 'fields' => $payload];
+    }
+
     public function searchRecipientId(?string $search, ?string $name = null, ?string $phone = null): ?string
     {
         $term = $search ?: ($phone ?: $name);
@@ -516,6 +547,116 @@ class SistrackClient
         }
 
         return ['id' => $id];
+    }
+
+    /**
+     * Updates an existing order resubmitting its current Nova update-fields with overrides.
+     * Readonly fields (status, dates, payment type, observations) are ignored by Sistrack.
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array{resource: array<string, mixed>, fields: array<string, mixed>}
+     */
+    public function updateOrder(int|string $id, array $overrides): array
+    {
+        $current = $this->novaGet('/nova-api/orders/'.$id.'/update-fields', ['editing' => 'true', 'editMode' => 'update']);
+        if (! $current->successful()) {
+            throw new RuntimeException('No se pudo leer la orden Sistrack #'.$id.' para editar (HTTP '.$current->status().').');
+        }
+
+        $payload = [];
+        foreach (data_get($current->json(), 'fields') ?? [] as $field) {
+            $attribute = (string) ($field['attribute'] ?? '');
+            $component = (string) ($field['component'] ?? '');
+            if ($attribute === '' || str_starts_with($attribute, 'conditional_container') || $component === 'file-field') {
+                continue;
+            }
+            if ($component === 'belongs-to-field') {
+                $payload[$attribute] = $field['belongsToId'] ?? null;
+
+                continue;
+            }
+            $value = $field['value'] ?? null;
+            $payload[$attribute] = is_bool($value) ? (int) $value : $value;
+        }
+        unset($payload['received_by']);
+
+        $before = $payload;
+        $payload = array_merge($payload, $overrides, [
+            '_method' => 'PUT',
+            '_retrieved_at' => now()->timestamp,
+        ]);
+
+        $response = $this->novaPut(
+            '/nova-api/orders/'.$id.'?viaResource=&viaResourceId=&viaRelationship=&editing=true&editMode=update',
+            $payload,
+        );
+        if (! $response->successful()) {
+            throw new RuntimeException($this->formatNovaError('No se pudo actualizar la orden Sistrack #'.$id, $response));
+        }
+
+        return [
+            'resource' => (array) (data_get($response->json(), 'resource') ?? []),
+            'fields' => $before,
+        ];
+    }
+
+    /**
+     * Tamaños que ofrece la acción Nova "Crear Etiqueta".
+     */
+    public const LABEL_SIZES = [
+        'EES4X4' => '4 × 4"',
+        'EESSLOGOOBNEW' => '4 × 6"',
+        'EES3X4' => '3 × 4"',
+        'EESL' => 'Carta (2 etiquetas por hoja)',
+    ];
+
+    public const LABEL_DEFAULT_SIZE = 'EES4X4';
+
+    public const LABEL_MAX_PER_BATCH = 80;
+
+    /**
+     * Ejecuta "Crear Etiqueta" y devuelve el HTML imprimible (autocontenido: estilos,
+     * imagen y código de barras embebidos). La página exige sesión Sistrack.
+     *
+     * @param  list<int|string>  $orderIds  IDs internos de Sistrack (sistrack_external_id)
+     */
+    public function labelsHtml(array $orderIds, string $size = self::LABEL_DEFAULT_SIZE): string
+    {
+        $orderIds = array_values(array_unique(array_filter(array_map('strval', $orderIds))));
+        if ($orderIds === []) {
+            throw new RuntimeException('No hay órdenes Sistrack para imprimir.');
+        }
+        if (count($orderIds) > self::LABEL_MAX_PER_BATCH) {
+            throw new RuntimeException('Sistrack imprime máximo '.self::LABEL_MAX_PER_BATCH.' etiquetas por vez.');
+        }
+        if (! array_key_exists($size, self::LABEL_SIZES)) {
+            $size = self::LABEL_DEFAULT_SIZE;
+        }
+
+        $query = http_build_query(['action' => 'crear-etiqueta', 'pivotAction' => 'false', 'search' => '', 'filters' => '', 'trashed' => '']);
+        $response = $this->novaPost('/nova-api/orders/action?'.$query, [
+            'resources' => implode(',', $orderIds),
+            'size' => $size,
+        ]);
+
+        if (! $response->successful()) {
+            throw new RuntimeException($this->formatNovaError('Sistrack no generó la etiqueta', $response));
+        }
+
+        $path = (string) ($response->json('openInNewTab') ?? $response->json('redirect') ?? '');
+        if ($path === '') {
+            throw new RuntimeException('Sistrack no devolvió la página de la etiqueta.');
+        }
+        if (str_starts_with($path, 'http')) {
+            $path = (string) parse_url($path, PHP_URL_PATH).(parse_url($path, PHP_URL_QUERY) ? '?'.parse_url($path, PHP_URL_QUERY) : '');
+        }
+
+        $page = $this->novaGet($path);
+        if ($page->status() !== 200 || ! str_contains($page->body(), '<')) {
+            throw new RuntimeException('No se pudo abrir la etiqueta en Sistrack (HTTP '.$page->status().').');
+        }
+
+        return $page->body();
     }
 
     /**

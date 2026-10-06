@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\Sale;
+use App\Support\ElSalvadorGeo;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -19,6 +20,7 @@ class SistrackSyncService
     public function __construct(
         private SistrackClient $client,
         private SaleLabelExportService $labelExport,
+        private SaleService $sales,
     ) {}
 
     public function canSend(Sale $sale): bool
@@ -39,10 +41,12 @@ class SistrackSyncService
         foreach ($sales as $sale) {
             if ($sale->sistrack_status === self::STATUS_SENT) {
                 $skipped[] = ['sale' => $sale, 'reason' => 'Ya enviado a Sistrack'];
+
                 continue;
             }
             if (! $sale->canSendToSistrack()) {
                 $skipped[] = ['sale' => $sale, 'reason' => 'La empresa de envío no tiene Sistrack o la venta no aplica'];
+
                 continue;
             }
 
@@ -56,13 +60,35 @@ class SistrackSyncService
         return compact('sent', 'failed', 'skipped');
     }
 
-    public function sendOne(Sale $sale): Sale
+    public function resendOne(Sale $sale): Sale
     {
-        if ($sale->sistrack_status === self::STATUS_SENT && filled($sale->sistrack_external_id)) {
+        if (! $sale->canResendToSistrack()) {
+            throw new RuntimeException('Esta venta no se puede reenviar a Sistrack (revisa que ya se haya enviado y que la empresa tenga Sistrack).');
+        }
+
+        $sale->forceFill([
+            'sistrack_status' => self::STATUS_PENDING,
+            'sistrack_external_id' => null,
+            'sistrack_order_id' => null,
+            'sistrack_shipping_status' => null,
+            'sistrack_status_synced_at' => null,
+            'sistrack_last_error' => null,
+        ])->save();
+
+        return $this->sendOne($sale->fresh(), force: true);
+    }
+
+    public function sendOne(Sale $sale, bool $force = false): Sale
+    {
+        if (! $force && $sale->sistrack_status === self::STATUS_SENT && filled($sale->sistrack_external_id)) {
             return $sale;
         }
 
-        if (! $sale->canSendToSistrack()) {
+        if ($force) {
+            if (! $sale->isEligibleForSistrackPush()) {
+                throw new RuntimeException('Esta venta no se puede reenviar a Sistrack (revisa empresa de envío y credenciales).');
+            }
+        } elseif (! $sale->canSendToSistrack()) {
             throw new RuntimeException('Esta venta no se puede enviar a Sistrack (revisa empresa de envío y credenciales).');
         }
 
@@ -86,37 +112,44 @@ class SistrackSyncService
             $this->client->useCarrier($carrier)->login();
 
             // Evitar duplicados: si ya existe en Sistrack por Id Comercio, marcar enviada.
-            // Preferir la orden con estado más avanzado si hay duplicados.
-            $existing = $this->client->findBestOrderByCommerceId($sale->number);
-            if ($existing) {
-                $sale->forceFill([
-                    'sistrack_status' => self::STATUS_SENT,
-                    'sistrack_external_id' => (string) $existing['id'],
-                    'sistrack_order_id' => $sale->number,
-                    'sistrack_shipping_status' => $existing['shipping_status'] !== null
-                        ? (string) $existing['shipping_status']
-                        : $sale->sistrack_shipping_status,
-                    'sistrack_last_error' => null,
-                    'sistrack_last_attempt_at' => now(),
-                ])->save();
+            // En reenvío se crea etiqueta nueva (la anterior se borró en Sistrack).
+            if (! $force) {
+                $existing = $this->client->findBestOrderByCommerceId($sale->number);
+                if ($existing) {
+                    $sale->forceFill([
+                        'sistrack_status' => self::STATUS_SENT,
+                        'sistrack_external_id' => (string) $existing['id'],
+                        'sistrack_order_id' => $sale->number,
+                        'sistrack_shipping_status' => $existing['shipping_status'] !== null
+                            ? (string) $existing['shipping_status']
+                            : $sale->sistrack_shipping_status,
+                        'sistrack_last_error' => null,
+                        'sistrack_last_attempt_at' => now(),
+                    ])->save();
 
-                return $sale->fresh();
+                    return $sale->fresh();
+                }
             }
 
+            $recipientPayload = $this->recipientPayload($sale);
             $recipientId = $sale->sistrack_recipient_id
                 ?: $this->client->searchRecipientId($customer->phone ?: $customer->name, $customer->name, $customer->phone);
 
-            if (! $recipientId) {
-                $recipientId = $this->client->createRecipient($this->recipientPayload($sale))['id'];
+            if ($recipientId) {
+                // Reutilizar ID pero refrescar dirección/depto (evita datos viejos o mal mapeados).
+                $this->client->updateRecipient((string) $recipientId, $recipientPayload);
+            } else {
+                $recipientId = $this->client->createRecipient($recipientPayload)['id'];
             }
 
             $order = $this->client->createOrder($this->orderPayload($sale, (string) $recipientId));
 
-            // Re-chequear por si Nova no devolvió id y/o ya existía otra.
             $createdId = (string) $order['id'];
-            $best = $this->client->findBestOrderByCommerceId($sale->number);
-            if ($best) {
-                $createdId = (string) $best['id'];
+            if (! $force) {
+                $best = $this->client->findBestOrderByCommerceId($sale->number);
+                if ($best) {
+                    $createdId = (string) $best['id'];
+                }
             }
 
             $sale->forceFill([
@@ -138,6 +171,69 @@ class SistrackSyncService
 
             throw $e;
         }
+    }
+
+    /**
+     * Pushes current customer + total/description to the existing Sistrack order (no new guide).
+     *
+     * @return array{sale: Sale, warnings: list<string>}
+     */
+    public function updateInSistrack(Sale $sale): array
+    {
+        if (! $sale->hasSistrackLabel()) {
+            throw new RuntimeException('Esta venta no está en Sistrack.');
+        }
+
+        $sale->loadMissing(['customer', 'seller', 'items.product', 'shippingCarrier']);
+        if (! $sale->customer) {
+            throw new RuntimeException('La venta no tiene cliente.');
+        }
+        $carrier = $sale->shippingCarrier;
+        if (! $carrier?->supportsSistrack()) {
+            throw new RuntimeException('La empresa de envío no tiene Sistrack.');
+        }
+
+        $this->client->useCarrier($carrier)->login();
+        $externalId = (string) $sale->sistrack_external_id;
+        $recipientPayload = $this->recipientPayload($sale);
+
+        $recipientId = $sale->sistrack_recipient_id;
+        if (! filled($recipientId)) {
+            $label = (string) ($this->client->getOrder($externalId)['fields']['Recipient'] ?? '');
+            $recipientId = preg_match('/^\s*(\d+)/', $label, $m) ? $m[1] : null;
+        }
+        if (! filled($recipientId)) {
+            throw new RuntimeException('No se encontró el destinatario de la orden en Sistrack.');
+        }
+
+        $this->client->updateRecipient((string) $recipientId, $recipientPayload);
+
+        $order = $this->orderPayload($sale, (string) $recipientId);
+        $result = $this->client->updateOrder($externalId, [
+            'description' => $order['description'],
+            'declared_value' => $order['declared_value'],
+            'use_recipient_address' => 1,
+        ]);
+
+        $warnings = [];
+        if (($result['fields']['payment_type'] ?? null) && $result['fields']['payment_type'] !== $order['payment_type']) {
+            $warnings[] = 'Sistrack no permite cambiar el tipo de pago ('.$result['fields']['payment_type'].' → '.$order['payment_type'].'); usa «Reenviar» si cambió la forma de pago.';
+        }
+
+        $orderAddress = $result['resource']['address_line_1_order'] ?? null;
+        $orderCity = $result['resource']['city_order'] ?? null;
+        $sameText = fn ($a, $b) => Str::lower(trim((string) $a)) === Str::lower(trim((string) $b));
+        if ($orderAddress !== null && (! $sameText($orderAddress, $recipientPayload['address_line_1'] ?? '') || ! $sameText($orderCity, $recipientPayload['city'] ?? ''))) {
+            $warnings[] = 'El destinatario se actualizó, pero la orden conserva la dirección anterior ('.$orderAddress.', '.$orderCity.'). Corrígela en Sistrack o usa «Reenviar».';
+        }
+
+        $sale->forceFill([
+            'sistrack_recipient_id' => (string) $recipientId,
+            'sistrack_last_attempt_at' => now(),
+            'sistrack_last_error' => null,
+        ])->save();
+
+        return ['sale' => $sale->fresh(), 'warnings' => $warnings];
     }
 
     /**
@@ -163,6 +259,7 @@ class SistrackSyncService
         foreach ($sales as $sale) {
             if (! $sale->canSyncSistrackStatus()) {
                 $skipped[] = ['sale' => $sale, 'reason' => 'No enviada a Sistrack o anulada'];
+
                 continue;
             }
             $carrierId = (int) ($sale->shipping_carrier_id ?? 0);
@@ -177,6 +274,7 @@ class SistrackSyncService
                 foreach ($carrierSales as $sale) {
                     $skipped[] = ['sale' => $sale, 'reason' => 'Empresa sin Sistrack'];
                 }
+
                 continue;
             }
 
@@ -186,6 +284,7 @@ class SistrackSyncService
                 foreach ($carrierSales as $sale) {
                     $failed[] = ['sale' => $sale, 'error' => $e->getMessage()];
                 }
+
                 continue;
             }
 
@@ -245,6 +344,22 @@ class SistrackSyncService
 
         $changed = false;
         if ($mapped && $sale->canProgressToStatus($mapped) && $sale->status !== $mapped) {
+            if ($mapped === Sale::STATUS_RETURNED) {
+                $sale->save();
+                $this->sales->markReturned($sale->fresh());
+                $changed = true;
+
+                return ['sale' => $sale->fresh(), 'changed' => $changed];
+            }
+
+            if ($mapped === Sale::STATUS_DELIVERED) {
+                $sale->save();
+                $this->sales->markDelivered($sale->fresh());
+                $changed = true;
+
+                return ['sale' => $sale->fresh(), 'changed' => $changed];
+            }
+
             $sale->status = $mapped;
             $sale->status_changed_at = now();
             $changed = true;
@@ -402,21 +517,26 @@ class SistrackSyncService
             default => 'Cash',
         };
 
+        $observations = trim((string) ($sale->notes ?: 'Enviado desde ROLO CRM'));
+        if ($sale->isPaidBeforeShipping()) {
+            $observations = trim($observations."\nPagado por transferencia. Cobrar $0.00.");
+        }
+
         return [
             'order_id' => $sale->number,
             'sender_id' => $this->client->senderId(),
             'Recipient' => (int) $recipientId,
             'description' => $description,
             'weight' => number_format($weight, 2, '.', ''),
-            'declared_value' => number_format((float) $sale->total, 2, '.', ''),
+            'declared_value' => number_format($sale->sistrackCollectAmount(), 2, '.', ''),
             'use_recipient_address' => 1,
             'payment_type' => $paymentType,
             'shipping_status' => 1, // CREADO
             'shipping_date' => optional($sale->sold_at)->toDateString() ?: now()->toDateString(),
             'estimated_shipping_date' => optional($sale->sold_at)->toDateString() ?: now()->toDateString(),
             'batches' => '1',
-            'is_fragile' => 0,
-            'observations' => trim((string) ($sale->notes ?: 'Enviado desde ROLO CRM')),
+            'is_fragile' => 1,
+            'observations' => $observations,
         ];
     }
 
@@ -425,10 +545,22 @@ class SistrackSyncService
      */
     private function mapLocation(?string $department, ?string $municipality): array
     {
+        $municipality = ElSalvadorGeo::canonicalizeMunicipality($department, $municipality);
         $map = $this->client->departmentCityMap();
-        $state = $this->matchKey($department, array_keys($map)) ?? 'San Salvador';
+        $state = $this->matchKey($department, array_keys($map));
+        if ($state === null) {
+            throw new RuntimeException(
+                'No se pudo mapear el departamento "'.($department ?: '(vacío)').'" a Sistrack. Revisa el nombre en el cliente.'
+            );
+        }
+
         $cities = $map[$state] ?? [];
-        $city = $this->matchKey($municipality, $cities) ?? ($cities[0] ?? 'San Salvador');
+        $city = $this->matchKey($municipality, $cities);
+        if ($city === null) {
+            throw new RuntimeException(
+                'No se pudo mapear el municipio "'.($municipality ?: '(vacío)').'" en "'.$state.'" (Sistrack). Revisa el cliente.'
+            );
+        }
 
         return [$state, $city];
     }
@@ -443,8 +575,22 @@ class SistrackSyncService
         }
 
         $needle = $this->normalize($value);
+        $aliases = [
+            // Sistrack usa typo histórico "Chaletenango"
+            'chalatenango' => 'chaletenango',
+            'chaletenango' => 'chalatenango',
+            // Catálogo local tenía typo "Lilisque"; oficial/Sistrack: "Lislique"
+            'lilisque' => 'lislique',
+            'lislique' => 'lilisque',
+        ];
+        $needles = array_unique(array_filter([
+            $needle,
+            $aliases[$needle] ?? null,
+        ]));
+
         foreach ($options as $option) {
-            if ($this->normalize($option) === $needle) {
+            $opt = $this->normalize($option);
+            if (in_array($opt, $needles, true)) {
                 return $option;
             }
         }
@@ -452,12 +598,33 @@ class SistrackSyncService
         // Contiene / contenido.
         foreach ($options as $option) {
             $opt = $this->normalize($option);
-            if (str_contains($opt, $needle) || str_contains($needle, $opt)) {
-                return $option;
+            foreach ($needles as $n) {
+                if (str_contains($opt, $n) || str_contains($n, $opt)) {
+                    return $option;
+                }
             }
         }
 
-        return null;
+        // Typo cercano (p. ej. Chalatenango vs Chaletenango).
+        $best = null;
+        $bestDistance = PHP_INT_MAX;
+        foreach ($options as $option) {
+            $opt = $this->normalize($option);
+            foreach ($needles as $n) {
+                $maxLen = max(strlen($n), strlen($opt));
+                if ($maxLen === 0) {
+                    continue;
+                }
+                $distance = levenshtein($n, $opt);
+                $threshold = $maxLen <= 8 ? 1 : 2;
+                if ($distance <= $threshold && $distance < $bestDistance) {
+                    $best = $option;
+                    $bestDistance = $distance;
+                }
+            }
+        }
+
+        return $best;
     }
 
     private function normalize(string $value): string

@@ -37,7 +37,9 @@ class CustomerPricingService
     }
 
     /**
-     * @return array<int, array<int, list<array{min:int, price:float}>>>
+     * Keys are strings so JS lookups by select value always match.
+     *
+     * @return array<string, array<string, list<array{min:int, price:float}>>>
      */
     public function catalogForJs(): array
     {
@@ -49,9 +51,11 @@ class CustomerPricingService
             ->orderBy('min_quantity')
             ->get()
             ->each(function (CustomerProductPriceTier $tier) use (&$grouped) {
-                $grouped[$tier->customer_id][$tier->product_id][] = [
+                $customerKey = (string) $tier->customer_id;
+                $productKey = (string) $tier->product_id;
+                $grouped[$customerKey][$productKey][] = [
                     'min' => (int) $tier->min_quantity,
-                    'price' => $tier->unitPriceWithVat(),
+                    'price' => round($tier->unitPriceWithVat(), 2),
                 ];
             });
 

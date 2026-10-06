@@ -1,21 +1,29 @@
 @extends('layouts.app')
 
-@section('title', 'Costos')
+@section('title', 'Resultado y márgenes')
 
 @section('content')
+@php
+    $expected = $summary['expected'] ?? [];
+    $realized = $summary['realized'] ?? [];
+    $pending = $summary['pending'] ?? [];
+@endphp
 <div class="topbar">
     <div>
-        <h1>Costos y márgenes</h1>
-        <p class="muted">COGS FIFO + envíos + devoluciones + gastos (USD). Una devolución cuenta como pérdida del flete del método de envío (sin comisión COD).</p>
+        <h1>Contabilidad · Resultado y márgenes</h1>
+        <p class="muted">Desglose: ventas → COGS → envío → devoluciones → gastos → resultado esperado vs real.</p>
     </div>
     <div class="actions">
+        <a class="btn btn-secondary" href="{{ route('accounting.dashboard', ['from' => $from->toDateString(), 'to' => $to->toDateString()]) }}">Resumen</a>
         <a class="btn btn-secondary" href="{{ route('costs.margins') }}">Márgenes detallados</a>
-        <a class="btn btn-secondary" href="{{ route('costs.sellers') }}">Ventas por vendedor</a>
+        <a class="btn btn-secondary" href="{{ route('costs.periods') }}">Por período</a>
+        <a class="btn btn-secondary" href="{{ route('costs.sellers') }}">Por vendedor</a>
         <a class="btn" href="{{ route('costs.expenses.create') }}">Nuevo gasto</a>
     </div>
 </div>
 
 <div class="card" style="margin-bottom:1rem">
+    @include('accounting._periods')
     <form class="search" method="GET" action="{{ route('costs.dashboard') }}">
         <input type="date" name="from" value="{{ $from->toDateString() }}">
         <input type="date" name="to" value="{{ $to->toDateString() }}">
@@ -23,43 +31,75 @@
     </form>
 </div>
 
-{{-- 1. Ventas --}}
-<h2 style="margin:0 0 .65rem;font-size:.95rem;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)">1 · Ventas del período</h2>
+{{-- 1. Lo que importa: esperado vs real --}}
+<h2 style="margin:0 0 .5rem;font-size:.95rem;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)">1 · Resultado del período</h2>
+<p class="muted" style="margin:0 0 .75rem">
+    <strong>Esperado</strong> = si todo lo confirmado/en ruta se entrega.
+    <strong>Real</strong> = solo lo ya entregado (tiempo real).
+    Ambos restan gastos y flete perdido en devoluciones.
+</p>
+
+<div class="grid-2" style="margin-bottom:.75rem">
+    <div class="card" style="border-color:#bfdbfe;background:#f8fbff">
+        <h3 style="margin:0 0 .35rem;font-size:1rem">Esperado</h3>
+        <p class="muted" style="margin:0 0 .75rem;font-size:.85rem">{{ (int) ($expected['sales_count'] ?? 0) }} ventas abiertas (confirmadas + en ruta + entregadas)</p>
+        <div style="font-size:1.75rem;font-weight:700;letter-spacing:-.02em">{{ money($expected['net_result_with_vat'] ?? $summary['net_result_with_vat']) }}</div>
+        <p class="muted" style="margin:.35rem 0 0;font-size:.85rem">Resultado c/IVA · proyección</p>
+        <div class="meta" style="margin:.85rem 0 0">
+            <div class="card">Ventas c/IVA<strong>{{ money($expected['sales_total_with_vat'] ?? 0) }}</strong></div>
+            <div class="card">Margen c/IVA<strong>{{ money($expected['real_margin_with_vat'] ?? 0) }}</strong><span class="muted">prod + envío neto</span></div>
+        </div>
+    </div>
+    <div class="card" style="border-color:#a7f3d0;background:#f0fdf4">
+        <h3 style="margin:0 0 .35rem;font-size:1rem">Real (cerrado)</h3>
+        <p class="muted" style="margin:0 0 .75rem;font-size:.85rem">{{ (int) ($realized['sales_count'] ?? 0) }} entregadas</p>
+        <div style="font-size:1.75rem;font-weight:700;letter-spacing:-.02em" @style(['color: var(--danger)' => ($realized['net_result_with_vat'] ?? 0) < 0])>
+            {{ money($realized['net_result_with_vat'] ?? 0) }}
+        </div>
+        <p class="muted" style="margin:.35rem 0 0;font-size:.85rem">Resultado c/IVA · solo entregadas</p>
+        <div class="meta" style="margin:.85rem 0 0">
+            <div class="card">Ventas c/IVA<strong>{{ money($realized['sales_total_with_vat'] ?? 0) }}</strong></div>
+            <div class="card">Margen c/IVA<strong>{{ money($realized['real_margin_with_vat'] ?? 0) }}</strong><span class="muted">prod + envío neto</span></div>
+        </div>
+    </div>
+</div>
+
+<div class="meta" style="margin-bottom:1.25rem">
+    <div class="card">Aún en camino<strong>{{ (int) ($pending['sales_count'] ?? 0) }}</strong><span class="muted">confirmadas / en ruta · no entran al real</span></div>
+    <div class="card">Margen pendiente c/IVA<strong>{{ money($pending['real_margin_with_vat'] ?? 0) }}</strong><span class="muted">al entregarse, el real sube hacia el esperado</span></div>
+</div>
+
+{{-- 2. Desglose único (cómo se arma el esperado) --}}
+<h2 style="margin:0 0 .5rem;font-size:.95rem;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)">2 · Desglose (base del esperado)</h2>
+<p class="muted" style="margin:0 0 .75rem">
+    Una sola vez: ventas → costo → envío → margen → restas (devoluciones + gastos) → resultado esperado.
+</p>
+
 <div class="meta">
-    <div class="card"># Ventas<strong>{{ $summary['sales_count'] }}</strong><span class="muted">confirmadas / en ruta / entregadas</span></div>
     <div class="card">Ventas s/IVA<strong>{{ money($summary['sales_total']) }}</strong></div>
-    <div class="card">Ventas c/IVA<strong>{{ money($summary['sales_total_with_vat']) }}</strong></div>
+    <div class="card">IVA<strong>{{ money($summary['vat_total']) }}</strong></div>
     <div class="card">COGS FIFO<strong>{{ money($summary['cogs_total']) }}</strong></div>
-    <div class="card">Margen prod. s/IVA<strong>{{ money($summary['gross_margin_without_vat']) }}</strong><span class="muted">{{ number_format($summary['gross_margin_percent'], 1) }}%</span></div>
-    <div class="card">Margen prod. c/IVA<strong>{{ money($summary['gross_margin_with_vat']) }}</strong><span class="muted">{{ number_format($summary['gross_margin_percent_with_vat'], 1) }}%</span></div>
+    <div class="card">Margen producto c/IVA<strong>{{ money($summary['gross_margin_with_vat']) }}</strong><span class="muted">{{ number_format($summary['gross_margin_percent_with_vat'], 1) }}%</span></div>
 </div>
-
-{{-- 2. Envíos (solo ventas revenue) --}}
-<h2 style="margin:1.25rem 0 .65rem;font-size:.95rem;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)">2 · Envíos (ventas activas)</h2>
-<div class="meta">
-    <div class="card">Envío cobrado<strong>{{ money($summary['shipping_charged']) }}</strong><span class="muted">lo que pagó el cliente</span></div>
-    <div class="card">Costo courier+COD<strong>{{ money($summary['carrier_cost_total']) }}</strong><span class="muted">método de envío</span></div>
+<div class="meta" style="margin-top:.65rem">
+    <div class="card">Envío cobrado<strong>{{ money($summary['shipping_charged']) }}</strong></div>
+    <div class="card">Costo courier + COD<strong>{{ money($summary['carrier_cost_total']) }}</strong></div>
     <div class="card">Envío neto<strong>{{ money($summary['shipping_net']) }}</strong><span class="muted">cobrado − courier</span></div>
-    <div class="card">Margen real c/IVA<strong>{{ money($summary['real_margin_with_vat']) }}</strong><span class="muted">{{ number_format($summary['real_margin_percent_with_vat'], 1) }}% · prod + envío neto</span></div>
+    <div class="card">= Margen real c/IVA<strong>{{ money($summary['real_margin_with_vat']) }}</strong><span class="muted">{{ number_format($summary['real_margin_percent_with_vat'], 1) }}%</span></div>
+</div>
+<div class="meta" style="margin-top:.65rem;margin-bottom:1.25rem">
+    <div class="card">Devoluciones<strong>{{ (int) ($summary['returns_count'] ?? 0) }}</strong><span class="muted">{{ number_format($summary['returns_rate'] ?? 0, 1) }}% del intento</span></div>
+    <div class="card">− Flete perdido (dev.)<strong style="color:var(--danger)">{{ money($summary['returns_loss'] ?? 0) }}</strong><span class="muted">sin comisión COD</span></div>
+    <div class="card">− Gastos operativos<strong>{{ money($summary['expenses_total']) }}</strong></div>
+    <div class="card">= Resultado esperado<strong>{{ money($summary['net_result_with_vat']) }}</strong></div>
 </div>
 
-{{-- 3. Devoluciones --}}
-<h2 style="margin:1.25rem 0 .65rem;font-size:.95rem;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)">3 · Devoluciones (pérdida de envío)</h2>
-<div class="meta">
-    <div class="card"># Devoluciones<strong>{{ (int) ($summary['returns_count'] ?? 0) }}</strong><span class="muted">{{ number_format($summary['returns_rate'] ?? 0, 1) }}% del intento</span></div>
-    <div class="card">Flete perdido<strong style="color:var(--danger)">{{ money($summary['returns_shipping_cost'] ?? 0) }}</strong><span class="muted">costo método de envío</span></div>
-    <div class="card">Pérdida por devoluciones<strong style="color:var(--danger)">{{ money($summary['returns_loss'] ?? 0) }}</strong><span class="muted">solo flete · sin COD</span></div>
+<div class="meta" style="margin-bottom:1.25rem">
+    <div class="card">Adeudado a proveedores<strong>{{ money($summary['supplier_payables_balance'] ?? 0) }}</strong><span class="muted"><a href="{{ route('inventory.payables.index') }}">Ver CxP</a> · saldo total, no del período</span></div>
 </div>
 
-{{-- 4. Resultado --}}
-<h2 style="margin:1.25rem 0 .65rem;font-size:.95rem;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)">4 · Resultado</h2>
-<div class="meta">
-    <div class="card">Gastos operativos<strong>{{ money($summary['expenses_total']) }}</strong></div>
-    <div class="card">Resultado s/IVA<strong>{{ money($summary['net_result']) }}</strong><span class="muted">margen − gastos − devoluciones</span></div>
-    <div class="card">Resultado c/IVA<strong>{{ money($summary['net_result_with_vat']) }}</strong><span class="muted">incluye pérdida por devoluciones</span></div>
-    <div class="card">Adeudado a proveedores<strong>{{ money($summary['supplier_payables_balance'] ?? 0) }}</strong><span class="muted"><a href="{{ route('inventory.payables.index') }}">Ver CxP</a></span></div>
-</div>
-
+{{-- 3. Detalle --}}
+<h2 style="margin:0 0 .65rem;font-size:.95rem;letter-spacing:.02em;text-transform:uppercase;color:var(--muted)">3 · Detalle</h2>
 <div class="grid-2" style="margin-top:.5rem">
     <div class="card">
         <h2 style="margin-top:0;font-size:1.1rem">Devoluciones del período</h2>

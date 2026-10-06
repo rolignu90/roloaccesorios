@@ -76,6 +76,7 @@ class ConsignmentDashboardService
                 'sellers.id as party_id',
                 'sellers.code',
                 'sellers.name',
+                DB::raw("'seller' as party_type"),
                 DB::raw("'Vendedor' as party_label"),
             ])
             ->selectRaw('SUM(consignments.total_with_vat) as delivered')
@@ -95,6 +96,7 @@ class ConsignmentDashboardService
                 'customers.id as party_id',
                 'customers.code',
                 'customers.name',
+                DB::raw("'customer' as party_type"),
                 DB::raw("'Cliente' as party_label"),
             ])
             ->selectRaw('SUM(consignments.total_with_vat) as delivered')

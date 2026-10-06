@@ -5,16 +5,21 @@
 @section('content')
 <div class="topbar">
     <div>
-        <h1>Gastos operativos</h1>
-        <p class="muted">Costos fuera del COGS de inventario</p>
+        <h1>Contabilidad · Gastos</h1>
+        <p class="muted">Costos operativos fuera del COGS de inventario</p>
     </div>
     <div class="actions">
-        <a class="btn btn-secondary" href="{{ route('costs.dashboard') }}">Dashboard</a>
+        <a class="btn btn-secondary" href="{{ route('accounting.dashboard') }}">Resumen</a>
+        <a class="btn btn-secondary" href="{{ route('costs.dashboard') }}">Resultado</a>
         <a class="btn" href="{{ route('costs.expenses.create') }}">Nuevo gasto</a>
     </div>
 </div>
 
 <div class="card" style="margin-bottom:1rem">
+    @include('accounting._periods', [
+        'from' => request()->filled('from') ? \Carbon\Carbon::parse(request('from')) : null,
+        'to' => request()->filled('to') ? \Carbon\Carbon::parse(request('to')) : null,
+    ])
     <form class="search" method="GET" action="{{ route('costs.expenses.index') }}">
         <input type="date" name="from" value="{{ request('from') }}">
         <input type="date" name="to" value="{{ request('to') }}">

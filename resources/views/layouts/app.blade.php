@@ -313,6 +313,25 @@
         }
         .btn-danger { background: var(--danger); border-color: var(--danger); }
         .btn-danger:hover { background: #9b0e18; border-color: #9b0e18; }
+        .action-menu { position: relative; }
+        .action-menu > summary { list-style: none; }
+        .action-menu > summary::-webkit-details-marker { display: none; }
+        .action-menu-panel {
+            position: absolute; right: 0; top: calc(100% + .35rem); z-index: 40;
+            min-width: 240px; padding: .35rem; background: #fff;
+            border: 1px solid var(--line); border-radius: var(--radius);
+            box-shadow: 0 12px 32px rgba(0, 0, 0, .14);
+        }
+        .action-menu-panel form { margin: 0; }
+        .action-menu-panel button, .action-menu-panel a {
+            display: block; width: 100%; padding: .55rem .7rem; border: 0; border-radius: .4rem;
+            background: none; color: var(--ink); font: inherit; text-align: left; text-decoration: none; cursor: pointer;
+        }
+        .action-menu-panel button:hover, .action-menu-panel a:hover { background: #f1f0ec; }
+        .action-menu-panel .danger { color: var(--danger); font-weight: 600; }
+        .action-menu-panel .danger:hover { background: #fdecee; }
+        .action-menu-label { padding: .45rem .7rem .15rem; font-size: .72rem; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+        .action-menu-sep { margin: .3rem 0; border-top: 1px solid var(--line); }
         .btn-link { background: transparent; color: var(--ink); padding: 0; border: 0; }
         .btn-link:hover { color: var(--signal); background: transparent; transform: none; }
         .actions { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; }
@@ -608,6 +627,39 @@
         }
         .tree-accordion[open] .tree-accordion-chevron { transform: rotate(180deg); }
         .tree-accordion-panel { border-top: 1px dashed var(--line); }
+        .sidebar-user {
+            display: flex;
+            flex-direction: column;
+            gap: .15rem;
+            padding: .65rem .8rem;
+            margin-bottom: .6rem;
+            border-radius: var(--radius);
+            color: var(--sidebar-ink);
+            text-decoration: none;
+            background: rgba(255, 255, 255, .05);
+        }
+        .sidebar-user span { color: var(--sidebar-muted); font-size: .8rem; }
+        .sidebar-user:hover, .sidebar-user.active { background: rgba(255, 255, 255, .1); }
+        .section-tabs {
+            display: flex;
+            gap: .25rem;
+            margin: 0 0 1.1rem;
+            border-bottom: 1px solid var(--line);
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+        .section-tabs a {
+            padding: .6rem .95rem;
+            color: var(--muted);
+            text-decoration: none;
+            font-weight: 600;
+            font-size: .92rem;
+            white-space: nowrap;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+        }
+        .section-tabs a:hover { color: var(--ink); }
+        .section-tabs a.active { color: var(--ink); border-bottom-color: var(--signal); }
         @keyframes brandIn {
             from { opacity: 0; transform: translateY(-8px); }
             to { opacity: 1; transform: none; }
@@ -700,7 +752,7 @@
         <span></span>
         <span></span>
     </button>
-    <a class="mobile-bar-brand" href="{{ route('inventory.dashboard') }}">
+    <a class="mobile-bar-brand" href="{{ \App\Support\Navigation::homeUrl(auth()->user()) }}">
         <img src="{{ asset('brand/rolo-logo.png') }}" alt="ROLO Accesorios" width="36" height="36">
         <span>ROLO Accesorios</span>
     </a>
@@ -708,36 +760,27 @@
 <div class="shell">
     <aside class="sidebar" data-sidebar>
         <button class="sidebar-close" type="button" data-nav-close aria-label="Cerrar menú">&times;</button>
-        <a class="brand-block" href="{{ route('inventory.dashboard') }}">
+        <a class="brand-block" href="{{ \App\Support\Navigation::homeUrl(auth()->user()) }}">
             <img class="brand-logo" src="{{ asset('brand/rolo-logo.png') }}" alt="ROLO Accesorios" width="168" height="168">
             <p class="brand-tag">CRM · Inventario</p>
         </a>
         <nav class="nav">
-            <div class="nav-label">Inventario</div>
-            <a href="{{ route('inventory.dashboard') }}" class="{{ request()->routeIs('inventory.dashboard') ? 'active' : '' }}">Dashboard</a>
-            <a href="{{ route('inventory.products.index') }}" class="{{ request()->routeIs('inventory.products.index', 'inventory.products.show', 'inventory.products.create', 'inventory.products.edit', 'inventory.products.store', 'inventory.products.update') ? 'active' : '' }}">Productos</a>
-            <a href="{{ route('inventory.combos.index') }}" class="{{ request()->routeIs('inventory.combos.*') ? 'active' : '' }}">Combos</a>
-            <a href="{{ route('inventory.products.bulk-prices') }}" class="{{ request()->routeIs('inventory.products.bulk-prices*') ? 'active' : '' }}">Precios masivos</a>
-            <a href="{{ route('inventory.free-shipping.index') }}" class="{{ request()->routeIs('inventory.free-shipping.*') ? 'active' : '' }}">Envío gratis</a>
-            <a href="{{ route('inventory.on-demand.index') }}" class="{{ request()->routeIs('inventory.on-demand.*') ? 'active' : '' }}">On demand</a>
-            <a href="{{ route('inventory.suppliers.index') }}" class="{{ request()->routeIs('inventory.suppliers.*') ? 'active' : '' }}">Proveedores</a>
-            <a href="{{ route('inventory.payables.index') }}" class="{{ request()->routeIs('inventory.payables.*') ? 'active' : '' }}">Cuentas por pagar</a>
-            <a href="{{ route('inventory.stock.index') }}" class="{{ request()->routeIs('inventory.stock.*') ? 'active' : '' }}">Entradas de stock</a>
-            <a href="{{ route('inventory.movements.index') }}" class="{{ request()->routeIs('inventory.movements.*') ? 'active' : '' }}">Historial movimientos</a>
-            <div class="nav-label">Ventas</div>
-            <a href="{{ route('sales.customers.index') }}" class="{{ request()->routeIs('sales.customers.*') ? 'active' : '' }}">Clientes</a>
-            <a href="{{ route('sales.sellers.index') }}" class="{{ request()->routeIs('sales.sellers.*') ? 'active' : '' }}">Vendedores</a>
-            <a href="{{ route('sales.shipping-carriers.index') }}" class="{{ request()->routeIs('sales.shipping-carriers.*') ? 'active' : '' }}">Empresas de envío</a>
-            <a href="{{ route('sales.sales.index') }}" class="{{ request()->routeIs('sales.sales.*') ? 'active' : '' }}">Ventas</a>
-            <div class="nav-label">Consignación</div>
-            <a href="{{ route('consignments.dashboard') }}" class="{{ request()->routeIs('consignments.dashboard') ? 'active' : '' }}">Dashboard</a>
-            <a href="{{ route('consignments.index') }}" class="{{ request()->routeIs('consignments.index', 'consignments.show', 'consignments.create', 'consignments.store') ? 'active' : '' }}">Entregas</a>
-            <a href="{{ route('consignments.monthly-products') }}" class="{{ request()->routeIs('consignments.monthly-products') ? 'active' : '' }}">Por mes / producto</a>
-            <div class="nav-label">Finanzas</div>
-            <a href="{{ route('costs.dashboard') }}" class="{{ request()->routeIs('costs.dashboard', 'costs.margins', 'costs.expenses.*') ? 'active' : '' }}">Costos</a>
-            <a href="{{ route('costs.sellers') }}" class="{{ request()->routeIs('costs.sellers') ? 'active' : '' }}">Ventas por vendedor</a>
+            @foreach (\App\Support\Navigation::sectionsFor(auth()->user()) as $navSection)
+                @if ($navSection['label'] !== '')
+                    <div class="nav-label">{{ $navSection['label'] }}</div>
+                @endif
+                @foreach ($navSection['items'] as $navItem)
+                    <a href="{{ route($navItem['tabs'][0]['route']) }}" class="{{ \App\Support\Navigation::itemIsActive(request(), $navItem) ? 'active' : '' }}">{{ $navItem['label'] }}</a>
+                @endforeach
+            @endforeach
         </nav>
         <div class="sidebar-footer">
+            @auth
+                <a href="{{ route('account.edit') }}" class="sidebar-user {{ request()->routeIs('account.*') ? 'active' : '' }}">
+                    <strong>{{ auth()->user()->name }}</strong>
+                    <span>{{ auth()->user()->role?->name ?? 'Sin rol' }} · Mi cuenta</span>
+                </a>
+            @endauth
             <form method="POST" action="{{ route('logout') }}">
                 @csrf
                 <button type="submit">Cerrar sesión</button>
@@ -745,8 +788,21 @@
         </div>
     </aside>
     <main class="main">
+        @php $sectionTabs = \App\Support\Navigation::activeTabs(request()); @endphp
+        @if ($sectionTabs)
+            <nav class="section-tabs" aria-label="Secciones">
+                @foreach ($sectionTabs as $tab)
+                    <a href="{{ route($tab['route']) }}" class="{{ $tab['is_active'] ? 'active' : '' }}">{{ $tab['label'] }}</a>
+                @endforeach
+            </nav>
+        @endif
+
         @if (session('success'))
             <div class="flash">{{ session('success') }}</div>
+        @endif
+
+        @if (session('error'))
+            <div class="errors">{{ session('error') }}</div>
         @endif
 
         @if ($errors->any())
@@ -783,6 +839,14 @@
         if (e.key === 'Escape') setOpen(false);
     });
 })();
+document.addEventListener('click', (e) => {
+    document.querySelectorAll('details.action-menu[open]').forEach((menu) => {
+        if (!menu.contains(e.target)) menu.removeAttribute('open');
+    });
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') document.querySelectorAll('details.action-menu[open]').forEach((menu) => menu.removeAttribute('open'));
+});
 </script>
 </body>
 </html>

@@ -5,16 +5,18 @@
 @section('content')
 <div class="topbar">
     <div>
-        <h1>Ventas por vendedor</h1>
+        <h1>Contabilidad · Por vendedor</h1>
         <p class="muted">Solo ventas confirmadas. Incluye productos, envío y margen real (courier + COD).</p>
     </div>
     <div class="actions">
-        <a class="btn btn-secondary" href="{{ route('costs.dashboard') }}">Dashboard costos</a>
+        <a class="btn btn-secondary" href="{{ route('accounting.dashboard') }}">Resumen</a>
+        <a class="btn btn-secondary" href="{{ route('costs.dashboard') }}">Resultado</a>
         <a class="btn btn-secondary" href="{{ route('costs.margins') }}">Márgenes</a>
     </div>
 </div>
 
 <div class="card" style="margin-bottom:1rem">
+    @include('accounting._periods')
     <form class="search" method="GET" action="{{ route('costs.sellers') }}" style="flex-wrap:wrap">
         <label class="muted" for="from">Desde</label>
         <input id="from" type="date" name="from" value="{{ $from->toDateString() }}">

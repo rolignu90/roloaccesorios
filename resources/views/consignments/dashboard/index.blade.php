@@ -10,6 +10,7 @@
     </div>
     <div class="actions">
         <a class="btn btn-secondary" href="{{ route('consignments.index') }}">Listado</a>
+        <a class="btn btn-secondary" href="{{ route('consignments.settle') }}">Liquidar</a>
         <a class="btn" href="{{ route('consignments.create') }}">Nueva consignación</a>
     </div>
 </div>
@@ -43,6 +44,7 @@
                     <th>Entregado</th>
                     <th>Pagado</th>
                     <th>Adeudado</th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody>
@@ -53,9 +55,20 @@
                         <td>{{ money($row->delivered) }}</td>
                         <td>{{ money($row->paid) }}</td>
                         <td><strong>{{ money($row->balance) }}</strong></td>
+                        <td>
+                            @if ((float) $row->balance > 0.009)
+                                <a class="btn btn-secondary" style="padding:.25rem .55rem;font-size:.8rem"
+                                   href="{{ route('consignments.settle', [
+                                       'party_type' => $row->party_type,
+                                       $row->party_type === 'seller' ? 'seller_id' : 'customer_id' => $row->party_id,
+                                   ]) }}">Liquidar</a>
+                            @else
+                                <span class="muted">—</span>
+                            @endif
+                        </td>
                     </tr>
                 @empty
-                    <tr><td colspan="5" class="muted">Sin datos.</td></tr>
+                    <tr><td colspan="6" class="muted">Sin datos.</td></tr>
                 @endforelse
             </tbody>
         </table>

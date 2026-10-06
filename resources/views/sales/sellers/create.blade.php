@@ -10,7 +10,7 @@
 <div class="card">
     <form method="POST" action="{{ route('sales.sellers.store') }}">
         @csrf
-        @include('sales.sellers._form', ['nextCode' => \App\Models\Seller::nextCode()])
+        @include('sales.sellers._form', ['nextCode' => $nextCode ?? \App\Models\Seller::nextCode(), 'customers' => $customers ?? collect()])
         <button class="btn" type="submit">Guardar</button>
     </form>
 </div>

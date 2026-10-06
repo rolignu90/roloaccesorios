@@ -10,55 +10,144 @@
     $municipalities = filled($selectedDepartment)
         ? \App\Support\ElSalvadorGeo::municipalityNames($selectedDepartment)
         : [];
-    $canEdit = $sale->isConfirmed();
+    $canEdit = $sale->isConfirmed() && auth()->user()->can('sales.edit');
+    $canSeeCosts = auth()->user()->can('inventory.costs');
+    $canEditPerm = auth()->user()->can('sales.edit');
+    $canVoidPerm = auth()->user()->can('sales.void');
+    $canUpdateSistrack = $canEdit && $sale->hasSistrackLabel();
+    $sistrackActions = $canEditPerm && ($canUpdateSistrack || $sale->canSyncSistrackStatus() || $sale->canResendToSistrack());
+    $statusActions = $canEditPerm && ($sale->canMarkDelivered() || $sale->canMarkReturned());
+    $voidAction = $canVoidPerm && ! $sale->isVoided()
+        && ($sale->isConfirmed() || $sale->isInTransit() || $sale->isDelivered() || $sale->isReturned());
 @endphp
 
 <div class="topbar">
     <div>
+        <a class="muted" href="{{ route('sales.sales.index') }}" style="font-size:.88rem;text-decoration:none">← Ventas</a>
         <h1>{{ $sale->number }}</h1>
         <p class="muted">
             {{ $sale->sold_at->format('d/m/Y H:i') }} ·
-            {{ $customer?->name }} ·
+            @if ($customer)
+                <a href="{{ route('sales.customers.show', $customer) }}">{{ $customer->name }}</a> ·
+            @endif
             Vendedor: {{ $sale->seller?->name ?? '—' }} ·
-            {{ config('sales.payment_methods')[$sale->payment_method] ?? $sale->payment_method }}
+            {{ config('sales.payment_methods')[$sale->payment_method] ?? $sale->payment_method }} ·
+            {{ $sale->channelLabel() }}
+            @if ($sale->cashSession)
+                (<a href="{{ route('store.cash.show', $sale->cashSession) }}">{{ $sale->cashSession->number }}</a>)
+            @endif
+            @if ($sale->isPaidBeforeShipping())
+                · Sistrack cobrará {{ money($sale->sistrackCollectAmount()) }} (ya pagado)
+            @endif
         </p>
     </div>
     <div class="actions">
-        <a class="btn btn-secondary" href="{{ route('sales.sales.index') }}">Lista</a>
-        @if ($customer)
-            <a class="btn btn-secondary" href="{{ route('sales.customers.show', $customer) }}">Ver cliente</a>
-        @endif
-        @if ($sale->canSendToSistrack())
+        @if ($canEditPerm && $sale->canSendToSistrack())
             <form method="POST" action="{{ route('sales.sales.send-sistrack.one', $sale) }}" id="sistrack-one-form">
                 @csrf
-                <button class="btn" type="submit" id="sistrack-one-btn">Enviar a Sistrack</button>
+                <button class="btn" type="submit" id="sistrack-one-btn" @if ($sale->isPaidBeforeShipping()) title="Sistrack cobrará $0.00 porque ya pagó por transferencia" @endif>Enviar a Sistrack</button>
             </form>
         @endif
-        @if ($sale->canSyncSistrackStatus())
-            <form method="POST" action="{{ route('sales.sales.sync-sistrack-status.one', $sale) }}">
-                @csrf
-                <button class="btn btn-secondary" type="submit">Sincronizar estado</button>
-            </form>
+        @if ($sale->isStoreSale())
+            <a class="btn btn-secondary" href="{{ route('store.sales.ticket', $sale) }}" target="_blank">Imprimir ticket</a>
         @endif
-        @if ($sale->isInTransit())
-            <form method="POST" action="{{ route('sales.sales.mark-delivered.one', $sale) }}" onsubmit="return confirm('¿Marcar esta venta como entregada?')">
-                @csrf
-                <button class="btn" type="submit">Marcar entregada</button>
-            </form>
-        @endif
-        @if (! $sale->isVoided() && $canEdit)
-            <form method="POST" action="{{ route('sales.sales.void', $sale) }}" onsubmit="return confirm('¿Anular esta venta y restaurar stock?')">
-                @csrf
-                <button class="btn btn-danger" type="submit">Anular venta</button>
-            </form>
-        @elseif (! $sale->isVoided() && $sale->isInTransit())
-            <form method="POST" action="{{ route('sales.sales.void', $sale) }}" onsubmit="return confirm('¿Anular esta venta y restaurar stock?')">
-                @csrf
-                <button class="btn btn-danger" type="submit">Anular venta</button>
-            </form>
+
+        @if ($sistrackActions || $statusActions || $voidAction)
+            <details class="action-menu">
+                <summary class="btn btn-secondary">Más acciones ▾</summary>
+                <div class="action-menu-panel">
+                    @if ($sistrackActions)
+                        <div class="action-menu-label">Sistrack</div>
+                        @if ($canUpdateSistrack)
+                            <form method="POST" action="{{ route('sales.sales.update-sistrack.one', $sale) }}" onsubmit="return confirm('¿Actualizar la orden en Sistrack con los datos actuales?\n\nMisma guía: cliente, dirección, descripción y monto a cobrar.')">
+                                @csrf
+                                <button type="submit" title="Envía a Sistrack los datos actuales sin crear guía nueva">Actualizar Sistrack ahora</button>
+                            </form>
+                        @endif
+                        @if ($sale->canSyncSistrackStatus())
+                            <form method="POST" action="{{ route('sales.sales.sync-sistrack-status.one', $sale) }}">
+                                @csrf
+                                <button type="submit">Sincronizar estado</button>
+                            </form>
+                        @endif
+                        @if ($sale->canResendToSistrack())
+                            <form method="POST" action="{{ route('sales.sales.resend-sistrack.one', $sale) }}" id="sistrack-one-form">
+                                @csrf
+                                <button type="submit" id="sistrack-one-btn">Reenviar (guía nueva)</button>
+                            </form>
+                        @endif
+                    @endif
+
+                    @if ($statusActions)
+                        @if ($sistrackActions)<div class="action-menu-sep"></div>@endif
+                        <div class="action-menu-label">Estado</div>
+                        @if ($sale->canMarkDelivered())
+                            <form method="POST" action="{{ route('sales.sales.mark-delivered.one', $sale) }}" onsubmit="return confirm('¿Marcar esta venta como entregada?')">
+                                @csrf
+                                <button type="submit">Marcar entregada</button>
+                            </form>
+                        @endif
+                        @if ($sale->canMarkReturned())
+                            <form method="POST" action="{{ route('sales.sales.mark-returned.one', $sale) }}" onsubmit="return confirm('¿Marcar esta venta como devolución?\n\nEl producto vuelve: se reingresa stock.\nEn costos sigue contando la pérdida de flete.')">
+                                @csrf
+                                <button type="submit">Marcar devolución</button>
+                            </form>
+                        @endif
+                    @endif
+
+                    @if ($voidAction)
+                        @php
+                            $voidConfirm = match (true) {
+                                $sale->isConfirmed() => "¿Anular esta venta?\n\nEl pedido no cumplió el ciclo (error o cancelación). Se restaura stock.",
+                                $sale->isReturned() => "¿Anular esta venta?\n\nYa es devolución: el stock ya se reingresó; solo se anula el registro.",
+                                default => "¿Anular esta venta?\n\nSe restaura stock.",
+                            };
+                            if ($sale->hasSistrackLabel()) {
+                                $voidConfirm .= "\n\nOJO: ya está en Sistrack. Esto no cancela la guía allá; cancélala también en Sistrack.";
+                            }
+                        @endphp
+                        @if ($sistrackActions || $statusActions)<div class="action-menu-sep"></div>@endif
+                        <form method="POST" action="{{ route('sales.sales.void', $sale) }}" onsubmit="return confirm(@js($voidConfirm))">
+                            @csrf
+                            <button class="danger" type="submit">Anular venta</button>
+                        </form>
+                    @endif
+                </div>
+            </details>
         @endif
     </div>
 </div>
+
+@if ($canUpdateSistrack)
+    <label class="card" data-sistrack-toggle style="display:flex;gap:.6rem;align-items:flex-start;margin-bottom:1rem;cursor:pointer;border-color:#fcd9b6;background:#fff8f1">
+        <input type="checkbox" id="update-sistrack-toggle" style="width:auto;margin-top:.2rem">
+        <span>
+            <strong>Actualizar también en Sistrack al guardar cambios</strong>
+            <span class="muted" style="display:block;font-size:.88rem;margin-top:.2rem">
+                Esta venta ya tiene guía en Sistrack (ID {{ $sale->sistrack_external_id }}). Si lo marcas, cada cambio que guardes abajo (cliente, envío, productos, descuentos) actualiza la misma orden allá: cliente, dirección, descripción y monto a cobrar.
+                Si no, solo cambia aquí. También puedes usar «Más acciones → Actualizar Sistrack ahora» al terminar.
+            </span>
+        </span>
+    </label>
+    <script>
+    (() => {
+        const toggle = document.getElementById('update-sistrack-toggle');
+        const key = 'sale-update-sistrack-{{ $sale->id }}';
+        toggle.checked = sessionStorage.getItem(key) === '1';
+        toggle.addEventListener('change', () => sessionStorage.setItem(key, toggle.checked ? '1' : '0'));
+        document.addEventListener('submit', (e) => {
+            const form = e.target;
+            if (!toggle.checked || !form.matches('form[data-sale-edit]')) return;
+            if (form.querySelector('input[name="update_sistrack"]')) return;
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'update_sistrack';
+            input.value = '1';
+            form.appendChild(input);
+        }, true);
+    })();
+    </script>
+@endif
 
 @if ($errors->has('sistrack') || $errors->has('status'))
     <div class="flash" style="background:#fef2f2;color:#991b1b;border-color:#fecaca;margin-bottom:1rem">
@@ -122,6 +211,7 @@
         </strong>
     </div>
     <div class="card">Total a cobrar<strong>{{ money($sale->total) }}</strong></div>
+    @if ($canSeeCosts)
     <div class="card">COGS FIFO<strong>{{ money($sale->cogs_total) }}</strong></div>
     <div class="card">Margen producto s/IVA<strong>{{ money($sale->grossMarginWithoutVat()) }}</strong>
         <div class="muted" style="margin-top:.35rem;font-size:.8rem;font-weight:500">Sin envío</div>
@@ -129,6 +219,42 @@
     <div class="card">Margen producto c/IVA<strong>{{ money($sale->grossMarginWithVat()) }}</strong>
         <div class="muted" style="margin-top:.35rem;font-size:.8rem;font-weight:500">Sin envío</div>
     </div>
+    @endif
+</div>
+
+<div class="card" style="margin-bottom:1rem">
+    <div class="topbar" style="margin-bottom:.75rem">
+        <div>
+            <h2 style="margin:0;font-size:1.1rem">Vendedor</h2>
+            <p class="muted" style="margin:.35rem 0 0">
+                Puedes reasignar el vendedor. El número de venta ({{ $sale->number }}) no cambia.
+            </p>
+        </div>
+    </div>
+
+    @if (! $sale->isVoided() && ($sellers ?? collect())->isNotEmpty())
+        <form method="POST" action="{{ route('sales.sales.seller.update', $sale) }}" style="display:flex;gap:.75rem;align-items:end;flex-wrap:wrap">
+            @csrf
+            @method('PATCH')
+            <div class="field" style="flex:1;min-width:220px;margin:0">
+                <label for="seller_id">Vendedor *</label>
+                <select id="seller_id" name="seller_id" required data-placeholder="Buscar vendedor…">
+                    @foreach ($sellers as $seller)
+                        <option value="{{ $seller->id }}" @selected((int) old('seller_id', $sale->seller_id) === (int) $seller->id)>
+                            {{ $seller->sale_prefix ?: 'V-' }} {{ $seller->code }} — {{ $seller->name }}
+                        </option>
+                    @endforeach
+                </select>
+            </div>
+            <button class="btn" type="submit">Actualizar vendedor</button>
+        </form>
+    @else
+        <p style="margin:0"><strong>{{ $sale->seller?->name ?? '—' }}</strong>
+            @if ($sale->seller)
+                <span class="muted">· {{ $sale->seller->code }}</span>
+            @endif
+        </p>
+    @endif
 </div>
 
 <div class="card" style="margin-bottom:1rem">
@@ -145,7 +271,7 @@
     </div>
 
     @if ($canEdit && $customer)
-        <form method="POST" action="{{ route('sales.sales.customer.update', $sale) }}" data-geo-root>
+        <form method="POST" action="{{ route('sales.sales.customer.update', $sale) }}" data-sale-edit data-geo-root>
             @csrf
             @method('PATCH')
             <div class="grid-2">
@@ -231,6 +357,7 @@
             <div class="meta" style="margin:0 0 1rem">
                 <div class="card">Empresa<strong>{{ $sale->shippingCarrier?->name ?? '—' }}</strong></div>
                 <div class="card">Cobrado al cliente<strong>{{ money($sale->shipping_amount) }}</strong></div>
+                @if ($canSeeCosts)
                 <div class="card">Costo envío (empresa)<strong>{{ money($sale->carrier_shipping_cost) }}</strong></div>
                 <div class="card">Comisión COD<strong>{{ money($sale->carrier_commission_amount) }}</strong></div>
                 <div class="card">Costo total empresa<strong>{{ money($sale->carrierCostTotal()) }}</strong></div>
@@ -241,11 +368,12 @@
                 <div class="card">Margen real c/IVA<strong>{{ money($sale->realMarginWithVat()) }}</strong>
                     <div class="muted" style="margin-top:.35rem;font-size:.8rem;font-weight:500">Total cobrado − COGS − costos empresa</div>
                 </div>
+                @endif
             </div>
         @endif
 
         @if ($canEdit)
-            <form method="POST" action="{{ route('sales.sales.shipping.update', $sale) }}">
+            <form method="POST" action="{{ route('sales.sales.shipping.update', $sale) }}" data-sale-edit>
                 @csrf
                 @method('PATCH')
                 <div class="grid-2">
@@ -289,22 +417,69 @@
             <h2 style="margin:0;font-size:1.1rem">Ítems</h2>
             <p class="muted" style="margin:.35rem 0 0">
                 @if ($canEdit)
-                    Puedes agregar, quitar o cambiar cantidades. El stock FIFO y la comisión COD se recalculan.
+                    Puedes corregir cantidad, precio c/IVA y descuentos de línea. El stock FIFO y la comisión COD se recalculan.
                 @endif
             </p>
         </div>
     </div>
+
+    @if ($canEdit)
+        <form method="POST" action="{{ route('sales.sales.discounts.update', $sale) }}" data-sale-edit style="margin-bottom:1.25rem;padding:1rem;border:1px solid var(--line);border-radius:8px;background:var(--bg, #fafafa)">
+            @csrf
+            @method('PATCH')
+            <h3 style="margin:0 0 .5rem;font-size:1rem">Rectificar total de productos</h3>
+            <p class="muted" style="margin:0 0 .75rem">
+                Escribe el <strong>total productos c/IVA</strong> que quieres cobrar (sin envío). Se ajusta el descuento global automáticamente.
+                Total actual productos: {{ money((float) $sale->total - (float) $sale->shipping_amount) }} · a cobrar con envío: {{ money($sale->total) }}
+            </p>
+            <div class="grid-3" style="align-items:end">
+                <div class="field" style="margin:0">
+                    <label for="target_products_total_with_vat">Total productos c/IVA deseado</label>
+                    <input
+                        id="target_products_total_with_vat"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        name="target_products_total_with_vat"
+                        value="{{ old('target_products_total_with_vat') }}"
+                        placeholder="{{ number_format((float) $sale->total - (float) $sale->shipping_amount, 2, '.', '') }}"
+                    >
+                </div>
+                <div class="field" style="margin:0">
+                    <label for="discount_percent">Desc. global %</label>
+                    <input id="discount_percent" type="number" min="0" max="100" step="0.01" name="discount_percent" value="{{ old('discount_percent', number_format((float) $sale->discount_percent, 2, '.', '')) }}">
+                </div>
+                <div class="field" style="margin:0">
+                    <label for="discount_amount">Desc. global monto c/IVA</label>
+                    <input id="discount_amount" type="number" min="0" step="0.01" name="discount_amount" value="{{ old('discount_amount', number_format((float) $sale->discount_amount, 2, '.', '')) }}">
+                </div>
+            </div>
+            <div class="actions" style="margin-top:.75rem">
+                <button class="btn" type="submit">Aplicar total / descuentos</button>
+            </div>
+            <p class="muted" style="margin:.5rem 0 0;font-size:.85rem">
+                Si llenas el total deseado, se ignora el % y se calcula el monto de descuento. Para subir el total por encima del bruto, edita el precio unitario de la línea.
+            </p>
+        </form>
+    @elseif ((float) $sale->discount_percent > 0 || (float) $sale->discount_amount > 0)
+        <p class="muted" style="margin:0 0 1rem">
+            Descuento global:
+            @if ((float) $sale->discount_percent > 0) {{ number_format((float) $sale->discount_percent, 2) }}% @endif
+            @if ((float) $sale->discount_amount > 0) {{ money($sale->discount_amount) }} @endif
+        </p>
+    @endif
+
     <table>
         <thead>
             <tr>
                 <th>Producto</th>
                 <th>Cant.</th>
-                <th>P. unit s/IVA</th>
-                <th>Desc.</th>
+                <th>P. unit c/IVA</th>
+                <th>Desc. % / $</th>
                 <th>Subtotal</th>
                 <th>IVA</th>
                 <th>Total</th>
-                <th>COGS</th>
+                @if ($canSeeCosts)<th>COGS</th>@endif
                 @if ($canEdit)
                     <th></th>
                 @endif
@@ -312,6 +487,9 @@
         </thead>
         <tbody>
             @foreach ($sale->items as $item)
+                @php
+                    $itemUnitWithVat = price_with_vat((float) $item->unit_price_without_vat);
+                @endphp
                 <tr>
                     <td>
                         {{ $item->product?->code }} — {{ $item->product?->name }}
@@ -319,31 +497,35 @@
                             <div class="muted" style="font-size:.8rem">Combo {{ $item->combo->code }} — {{ $item->combo->name }}</div>
                         @endif
                     </td>
-                    <td>
-                        @if ($canEdit)
-                            <form method="POST" action="{{ route('sales.sales.items.update', [$sale, $item]) }}" style="display:flex;gap:.35rem;align-items:center;min-width:7rem">
+                    @if ($canEdit)
+                        <td colspan="3">
+                            <form method="POST" action="{{ route('sales.sales.items.update', [$sale, $item]) }}" data-sale-edit style="display:grid;grid-template-columns:4.5rem 5.5rem 4.25rem 4.25rem auto;gap:.35rem;align-items:center">
                                 @csrf
                                 @method('PATCH')
-                                <input type="number" min="0" step="1" name="quantity" value="{{ old('quantity', $item->quantity) }}" required style="width:4.5rem;margin:0">
+                                <input type="number" min="0" step="1" name="quantity" value="{{ old('quantity', $item->quantity) }}" required title="Cantidad" style="margin:0;width:100%">
+                                <input type="number" min="0" step="0.01" name="unit_price_with_vat" value="{{ old('unit_price_with_vat', number_format($itemUnitWithVat, 2, '.', '')) }}" required title="Precio unitario c/IVA" style="margin:0;width:100%">
+                                <input type="number" min="0" max="100" step="0.01" name="discount_percent" value="{{ old('discount_percent', number_format((float) $item->discount_percent, 2, '.', '')) }}" title="Desc. %" style="margin:0;width:100%">
+                                <input type="number" min="0" step="0.01" name="discount_amount" value="{{ old('discount_amount', number_format((float) $item->discount_amount, 2, '.', '')) }}" title="Desc. monto c/IVA" style="margin:0;width:100%">
                                 <button class="btn btn-secondary" type="submit" style="padding:.4rem .65rem">OK</button>
                             </form>
-                        @else
-                            {{ $item->quantity }}
-                        @endif
-                    </td>
-                    <td>{{ money($item->unit_price_without_vat) }}</td>
-                    <td>
-                        @if ($item->discount_percent > 0) {{ number_format($item->discount_percent, 2) }}% @endif
-                        @if ($item->discount_amount > 0) {{ money($item->discount_amount) }} @endif
-                        @if ($item->discount_percent == 0 && $item->discount_amount == 0) — @endif
-                    </td>
+                            <div class="muted" style="font-size:.75rem;margin-top:.25rem">cant · precio c/IVA · desc% · desc$</div>
+                        </td>
+                    @else
+                        <td>{{ $item->quantity }}</td>
+                        <td>{{ money($itemUnitWithVat) }}</td>
+                        <td>
+                            @if ($item->discount_percent > 0) {{ number_format($item->discount_percent, 2) }}% @endif
+                            @if ($item->discount_amount > 0) {{ money($item->discount_amount) }} @endif
+                            @if ($item->discount_percent == 0 && $item->discount_amount == 0) — @endif
+                        </td>
+                    @endif
                     <td>{{ money($item->line_subtotal) }}</td>
                     <td>{{ money($item->line_vat) }}</td>
                     <td>{{ money($item->line_total) }}</td>
-                    <td>{{ money($item->cogs_total) }}</td>
+                    @if ($canSeeCosts)<td>{{ money($item->cogs_total) }}</td>@endif
                     @if ($canEdit)
                         <td>
-                            <form method="POST" action="{{ route('sales.sales.items.destroy', [$sale, $item]) }}" onsubmit="return confirm('¿Quitar este producto de la venta?')">
+                            <form method="POST" action="{{ route('sales.sales.items.destroy', [$sale, $item]) }}" data-sale-edit onsubmit="return confirm('¿Quitar este producto de la venta?')">
                                 @csrf
                                 @method('DELETE')
                                 <button class="btn btn-danger" type="submit" style="padding:.4rem .65rem">Quitar</button>
@@ -358,7 +540,7 @@
     @if ($canEdit)
         <hr style="border:0;border-top:1px solid var(--line);margin:1.25rem 0">
         <h3 style="margin:0 0 .75rem;font-size:1rem">Agregar producto</h3>
-        <form method="POST" action="{{ route('sales.sales.items.store', $sale) }}">
+        <form method="POST" action="{{ route('sales.sales.items.store', $sale) }}" data-sale-edit>
             @csrf
             <div class="grid-3" style="align-items:end">
                 <div class="field">
@@ -413,6 +595,7 @@
     @endif
 </div>
 
+@if ($canSeeCosts)
 <div class="card">
     <h2 style="margin-top:0;font-size:1.1rem">Desglose FIFO / COGS</h2>
     <table>
@@ -444,6 +627,7 @@
         </tbody>
     </table>
 </div>
+@endif
 
 @if ($canEdit)
     @include('partials.sv-geo-script')
@@ -482,11 +666,11 @@
     </script>
 @endif
 
-@if ($sale->canSendToSistrack())
+@if ($sale->canSendToSistrack() || $sale->canResendToSistrack())
 <div id="sistrack-modal" class="sistrack-modal" hidden aria-hidden="true">
     <div class="sistrack-modal__backdrop"></div>
     <div class="sistrack-modal__panel" role="dialog" aria-modal="true" aria-labelledby="sistrack-modal-title">
-        <h2 id="sistrack-modal-title" style="margin:0 0 .5rem;font-size:1.15rem">Enviando a Sistrack</h2>
+        <h2 id="sistrack-modal-title" style="margin:0 0 .5rem;font-size:1.15rem">{{ $sale->canResendToSistrack() ? 'Reenviando a Sistrack' : 'Enviando a Sistrack' }}</h2>
         <p class="muted" id="sistrack-modal-current" style="margin:0 0 .75rem">Preparando…</p>
         <div class="sistrack-modal__progress-wrap">
             <div class="sistrack-modal__progress" id="sistrack-modal-bar" style="width:0%"></div>
@@ -515,15 +699,19 @@
     const modalBar = document.getElementById('sistrack-modal-bar');
     const modalClose = document.getElementById('sistrack-modal-close');
     const number = @json($sale->number);
+    const isResend = @json($sale->canResendToSistrack());
     const csrf = form?.querySelector('input[name="_token"]')?.value || '';
 
     form?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        if (!confirm('¿Enviar esta venta a Sistrack / Express El Salvador?')) return;
+        const ok = isResend
+            ? confirm('¿Reenviar a Sistrack?\n\nSe crea una etiqueta nueva. Úsalo si borraste la anterior. Si todavía existe, Sistrack puede rechazar el duplicado.')
+            : confirm('¿Enviar esta venta a Sistrack / Express El Salvador?');
+        if (!ok) return;
         if (btn) btn.disabled = true;
         modal.hidden = false;
         modal.setAttribute('aria-hidden', 'false');
-        if (modalCurrent) modalCurrent.textContent = `Enviando venta ${number}`;
+        if (modalCurrent) modalCurrent.textContent = isResend ? `Reenviando venta ${number}` : `Enviando venta ${number}`;
         if (modalCount) modalCount.textContent = '1 / 1 ventas';
         if (modalBar) modalBar.style.width = '50%';
         if (modalClose) modalClose.hidden = true;
@@ -544,7 +732,7 @@
             if (!res.ok || data.ok === false) {
                 if (modalCurrent) modalCurrent.textContent = data.message || 'Falló el envío a Sistrack.';
             } else {
-                if (modalCurrent) modalCurrent.textContent = `Venta ${number} enviada correctamente.`;
+                if (modalCurrent) modalCurrent.textContent = data.message || `Venta ${number} enviada correctamente.`;
             }
         } catch (err) {
             if (modalCurrent) modalCurrent.textContent = err.message || 'Error de red.';

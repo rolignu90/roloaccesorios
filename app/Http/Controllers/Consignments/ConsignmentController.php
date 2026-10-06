@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Consignments;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Consignments\StoreConsignmentPartySettlementRequest;
 use App\Http\Requests\Consignments\StoreConsignmentPaymentRequest;
 use App\Http\Requests\Consignments\StoreConsignmentRequest;
 use App\Http\Requests\Consignments\StoreConsignmentReturnRequest;
@@ -17,6 +18,7 @@ use Carbon\Carbon;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
+use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 
@@ -26,8 +28,7 @@ class ConsignmentController extends Controller
         private ConsignmentService $consignments,
         private ConsignmentDashboardService $dashboard,
         private CustomerPricingService $customerPricing,
-    ) {
-    }
+    ) {}
 
     public function dashboard(Request $request): View
     {
@@ -121,6 +122,85 @@ class ConsignmentController extends Controller
         return redirect()
             ->route('consignments.show', $consignment)
             ->with('success', "Consignación {$consignment->number} registrada. Stock descontado.");
+    }
+
+    public function settleCreate(Request $request): View
+    {
+        $partyType = $request->input('party_type');
+        if (! in_array($partyType, [Consignment::PARTY_SELLER, Consignment::PARTY_CUSTOMER], true)) {
+            $partyType = null;
+        }
+
+        $sellerId = $request->filled('seller_id') ? (int) $request->input('seller_id') : null;
+        $customerId = $request->filled('customer_id') ? (int) $request->input('customer_id') : null;
+
+        if ($partyType === Consignment::PARTY_SELLER) {
+            $customerId = null;
+        } elseif ($partyType === Consignment::PARTY_CUSTOMER) {
+            $sellerId = null;
+        }
+
+        $partyId = $partyType === Consignment::PARTY_SELLER
+            ? $sellerId
+            : ($partyType === Consignment::PARTY_CUSTOMER ? $customerId : null);
+
+        $openConsignments = collect();
+        $partyName = null;
+        if ($partyType && $partyId) {
+            $openConsignments = $this->consignments->openConsignmentsForParty($partyType, $partyId);
+            $partyName = $partyType === Consignment::PARTY_SELLER
+                ? Seller::query()->find($partyId)?->name
+                : Customer::query()->find($partyId)?->name;
+        }
+
+        $sellers = Seller::query()->where('is_active', true)->orderBy('name')->get();
+        $customers = Customer::query()->where('is_active', true)->orderBy('name')->get();
+
+        return view('consignments.settle', [
+            'partyType' => $partyType,
+            'sellerId' => $sellerId,
+            'customerId' => $customerId,
+            'partyName' => $partyName,
+            'openConsignments' => $openConsignments,
+            'sellers' => $sellers,
+            'customers' => $customers,
+            'paymentMethods' => config('sales.payment_methods'),
+            'totalBalance' => round((float) $openConsignments->sum('balance_with_vat'), 2),
+        ]);
+    }
+
+    public function settleStore(StoreConsignmentPartySettlementRequest $request): RedirectResponse
+    {
+        $payload = $request->settlementPayload();
+
+        try {
+            $result = $this->consignments->settleParty(
+                $payload['party_type'],
+                $payload['party_id'],
+                $payload['allocations'],
+                [
+                    'paid_at' => $payload['paid_at'],
+                    'method' => $payload['method'],
+                    'notes' => $payload['notes'],
+                ]
+            );
+        } catch (InvalidArgumentException|RuntimeException $e) {
+            return back()->withInput()->withErrors(['settle' => $e->getMessage()]);
+        } catch (Throwable $e) {
+            return back()->withInput()->withErrors(['settle' => $e->getMessage()]);
+        }
+
+        $query = [
+            'party_type' => $payload['party_type'],
+            $payload['party_type'] === Consignment::PARTY_SELLER ? 'seller_id' : 'customer_id' => $payload['party_id'],
+        ];
+
+        return redirect()
+            ->route('consignments.settle', $query)
+            ->with(
+                'success',
+                "Liquidación registrada: {$result['count']} pago(s) por ".money($result['total']).'.'
+            );
     }
 
     public function show(Consignment $consignment): View

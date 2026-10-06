@@ -16,6 +16,11 @@
         </p>
     </div>
     <div class="actions">
+        <form method="GET" action="{{ route('inventory.products.labels') }}" target="_blank" style="display:flex;gap:.4rem;align-items:center">
+            <input type="hidden" name="ids[]" value="{{ $product->id }}">
+            <input type="number" name="copies" min="1" max="500" value="1" style="width:4.5rem" title="Copias" aria-label="Copias">
+            <button class="btn btn-secondary" type="submit">Imprimir etiquetas</button>
+        </form>
         <a class="btn btn-secondary" href="{{ route('inventory.stock.create', ['product_id' => $product->id]) }}">Entrada de stock</a>
         <a class="btn btn-secondary" href="{{ route('inventory.products.duplicate', $product) }}">Duplicar</a>
         <a class="btn" href="{{ route('inventory.products.edit', $product) }}">Editar</a>
@@ -123,10 +128,12 @@
                                         </div>
                                         <div class="muted">{{ $row->supplier?->code }}</div>
                                     </div>
-                                    <div>
-                                        <span class="muted">Compra</span>
-                                        <strong style="display:block">{{ money($row->purchase_price) }}</strong>
-                                    </div>
+                                    @can('inventory.costs')
+                                        <div>
+                                            <span class="muted">Compra</span>
+                                            <strong style="display:block">{{ money($row->purchase_price) }}</strong>
+                                        </div>
+                                    @endcan
                                 </div>
                             </li>
                         @endforeach
@@ -147,7 +154,7 @@
                 <th>Lote</th>
                 <th>Recibido</th>
                 <th>Proveedor</th>
-                <th>P. compra (USD)</th>
+                @can('inventory.costs')<th>P. compra (USD)</th>@endcan
                 <th>Recibido</th>
                 <th>Restante</th>
                 <th>Factura</th>
@@ -159,7 +166,7 @@
                     <td>{{ $lot->lot_number }}</td>
                     <td>{{ $lot->received_at->format('d/m/Y') }}</td>
                     <td>{{ $lot->supplier?->name ?: '—' }}</td>
-                    <td>{{ money($lot->purchase_price) }}</td>
+                    @can('inventory.costs')<td>{{ money($lot->purchase_price) }}</td>@endcan
                     <td>{{ $lot->quantity_received }}</td>
                     <td>
                         <span class="badge {{ $lot->quantity_remaining > 0 ? 'badge-ok' : 'badge-off' }}">
